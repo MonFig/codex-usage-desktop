@@ -3,7 +3,7 @@ import {
   parseToolContentBlocks, parseUserInputAnswers, processSignal, splitWebSearchResults, summarizeOutput,
   type ConversationBlock, type DisplayTokenUsageItem, type ExecOutput, type NestedActivity, type ReplayItem, type TimelineEntry, type TokenUsageItem, type ToolActivity, type UserInputQuestion, type WebSearchResult,
 } from "@/lib/session-conversation";
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, Bot, Check, ChevronDown, ChevronRight, Clipboard, Clock3, Coins, Database, FileDiff, FileJson, FolderOpen, GitBranch, Info, List, Loader2, RefreshCcw, MessageSquare, Terminal, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -15,6 +15,7 @@ import { SessionQuotaUsageView } from "./session-quota-usage";
 import { SessionArchivedBadge } from "./session-archived-badge";
 import { MetricBadge } from "./metric-badge";
 import { useModalFocus } from "@/hooks/use-modal-focus";
+import { SessionSearchHitView, SessionSearchToolbar, type SessionSearchHandle, type SessionSearchState } from "./session-search";
 
 type SessionDetailModalProps = {
   session: SessionDetailRow;
@@ -1202,6 +1203,8 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   const [isScrolled, setIsScrolled] = useState(false);
   const [collapsedHeight, setCollapsedHeight] = useState(0);
   const [activeTurnKey, setActiveTurnKey] = useState<string | null>(null);
+  const [search, setSearch] = useState<SessionSearchState | null>(null);
+  const searchRef = useRef<SessionSearchHandle>(null);
   const summaryRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -1229,6 +1232,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
     setIsScrolled(false);
     setCollapsedHeight(0);
     setActiveTurnKey(null);
+    setSearch(null);
     turnRefs.current.clear();
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
 
@@ -1291,9 +1295,30 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   });
   const threadName = detail ? detail.threadName : session.threadName;
   const displayedSessionId = cleanSessionId(detail?.sessionId ?? session.sessionId);
-  const rawPreview = detail ? buildRawPreview(detail.rawJsonl) : "";
+  const rawPreview = useMemo(() => detail ? buildRawPreview(detail.rawJsonl) : "", [detail]);
   const rawJsonlLines = useMemo(() => detail?.rawJsonl.split("\n") ?? [], [detail?.rawJsonl]);
   const conversation = useMemo(() => detail ? buildSessionConversation(detail.turns) : [], [detail]);
+  const turnPreviews = useMemo(() => detail?.turns.map(firstUserPreview) ?? [], [detail]);
+  const navigationPreviews = useMemo(() => detail?.turns.map((turn) => turn.userMessages.find((message) => {
+    const text = message.text.trim();
+    return text.length > 0
+      && !text.startsWith("# AGENTS.md instructions for ")
+      && !text.startsWith("<environment_context>");
+  })?.text.trim().slice(0, 600) ?? "") ?? [], [detail]);
+  const isSearching = search?.active ?? false;
+  const searchHit = search?.active && search.source === detail && search.scope === activeTab ? search.hit : null;
+
+  useLayoutEffect(() => {
+    if (!searchHit) return;
+    if (detail && searchHit.turnIndex >= 0) {
+      setActiveTurnKey(`${detail.turns[searchHit.turnIndex].turnId}-${searchHit.turnIndex}`);
+    }
+    const scroll = scrollRef.current;
+    const target = scroll?.querySelector<HTMLElement>("[data-session-search-hit]");
+    if (scroll && target) {
+      scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 16;
+    }
+  }, [detail, searchHit]);
 
   async function copySessionId() {
     await navigator.clipboard?.writeText(displayedSessionId);
@@ -1316,6 +1341,16 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   }
 
   function toggleTurn(key: string) {
+    if (isSearching) {
+      searchRef.current?.clear();
+      setExpandedTurns((current) => {
+        const next = new Set(current);
+        if (searchHit && key === `${detail!.turns[searchHit.turnIndex].turnId}-${searchHit.turnIndex}`) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+      return;
+    }
     setExpandedTurns((current) => {
       const next = new Set(current);
       if (next.has(key)) {
@@ -1328,6 +1363,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   }
 
   function scrollToTurn(key: string, position: "start" | "end") {
+    if (isSearching) flushSync(() => searchRef.current?.clear());
     if (position === "end" && !expandedTurns.has(key)) {
       flushSync(() => setExpandedTurns((current) => new Set(current).add(key)));
     }
@@ -1465,6 +1501,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
           </div>
         </header>
 
+        {detail ? <SessionSearchToolbar key={activePath} ref={searchRef} detail={detail} scope={activeTab} onChange={setSearch} /> : null}
         <div
           ref={scrollRef}
           data-testid="session-detail-scroll"
@@ -1518,13 +1555,8 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                   <div className="space-y-0.5">
                     {detail.turns.map((turn, index) => {
                       const turnKey = `${turn.turnId}-${index}`;
-                      const preview = turn.userMessages.find((message) => {
-                        const text = message.text.trim();
-                        return text.length > 0
-                          && !text.startsWith("# AGENTS.md instructions for ")
-                          && !text.startsWith("<environment_context>");
-                      })?.text.trim() ?? "";
-                      const isActive = activeTurnKey === turnKey;
+                      const preview = navigationPreviews[index];
+                      const isActive = isSearching ? searchHit?.turnIndex === index : activeTurnKey === turnKey;
                       return (
                         <div
                           key={turnKey}
@@ -1558,8 +1590,8 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
               <AgentHierarchy agents={detail.agents ?? []} activePath={detail.path} onSelect={setActivePath} />
               {detail.turns.map((turn, index) => {
                 const turnKey = `${turn.turnId}-${index}`;
-                const isExpanded = expandedTurns.has(turnKey);
-                const userPreview = firstUserPreview(turn);
+                const isExpanded = isSearching ? searchHit?.turnIndex === index : expandedTurns.has(turnKey);
+                const userPreview = turnPreviews[index];
                 return (
                 <section
                   key={turnKey}
@@ -1601,7 +1633,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                   </button>
                   {isExpanded ? (
                   <div className="mt-4 space-y-3">
-                    {conversation[index].map((block, itemIndex) => (
+                    {searchHit ? <SessionSearchHitView hit={searchHit} /> : conversation[index].map((block, itemIndex) => (
                       <ConversationItem key={itemIndex} block={block} rawJsonlLines={rawJsonlLines} />
                     ))}
                   </div>
@@ -1612,7 +1644,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
               </div>
             </div>
           ) : (
-            <div className="mx-auto flex h-full max-w-6xl flex-col gap-3">
+            isSearching ? <div className="mx-auto max-w-6xl">{searchHit ? <SessionSearchHitView hit={searchHit} /> : null}</div> : <div className="mx-auto flex h-full max-w-6xl flex-col gap-3">
               <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-1 text-sm">
                   <div className="font-semibold">{t("sessions.detail.raw_preview")}</div>

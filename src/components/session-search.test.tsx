@@ -1,0 +1,94 @@
+// @vitest-environment jsdom
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { createRef } from "react";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
+import type { SessionReplayDetail } from "@/lib/api";
+import type { SessionSearchRequest, SessionSearchResponse } from "@/lib/session-search";
+import { SessionSearchToolbar, type SessionSearchHandle } from "./session-search";
+
+class SearchWorker {
+  static instances: SearchWorker[] = [];
+  onmessage: ((event: MessageEvent<SessionSearchResponse>) => void) | null = null;
+  onerror: (() => void) | null = null;
+  postMessage = vi.fn<(message: SessionSearchRequest) => void>();
+  terminate = vi.fn();
+  constructor() { SearchWorker.instances.push(this); }
+  reply(requestId: number, index = 0) {
+    this.onmessage?.({ data: { requestId, count: 3, index, hit: null } } as MessageEvent<SessionSearchResponse>);
+  }
+  latestRequest() {
+    return this.postMessage.mock.calls.map(([request]) => request).findLast((request) => request.type === "search" || request.type === "select")!;
+  }
+}
+
+const detail: SessionReplayDetail = {
+  path: "/tmp/search.jsonl", sessionId: "search", threadName: null, modifiedAtMs: 0, sizeBytes: 0, rawJsonl: "", agents: [], turns: [],
+  summary: {
+    startTime: null, endTime: null, durationMs: null, timeToFirstTokenMs: null, cwd: null, projects: [], models: [], cliVersion: null, git: {},
+    inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, totalTokens: 0, costUSD: 0,
+    turnCount: 0, messageCount: 0, toolCallCount: 0, patchCount: 0, errorCount: 0,
+  },
+};
+
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
+  vi.useFakeTimers();
+  SearchWorker.instances = [];
+  vi.stubGlobal("Worker", SearchWorker);
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+it("rejects late results after changing or clearing the query and releases the worker", async () => {
+  const onChange = vi.fn();
+  render(<SessionSearchToolbar detail={detail} scope="timeline" onChange={onChange} ref={createRef<SessionSearchHandle>()} />);
+  expect(SearchWorker.instances).toHaveLength(0);
+  const input = screen.getByRole("searchbox");
+  fireEvent.change(input, { target: { value: "old" } });
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  const worker = SearchWorker.instances[0];
+  const old = worker.latestRequest();
+  fireEvent.change(input, { target: { value: "new" } });
+  act(() => worker.reply("requestId" in old ? old.requestId : -1));
+  expect(screen.getByRole("status")).toHaveTextContent("Searching");
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  const latest = worker.latestRequest();
+  act(() => worker.reply("requestId" in latest ? latest.requestId : -1));
+  expect(screen.getByRole("status")).toHaveTextContent("1 / 3");
+  fireEvent.keyDown(input, { key: "Escape" });
+  expect(input).toHaveValue("");
+  expect(onChange.mock.lastCall?.[0].active).toBe(false);
+  expect(worker.terminate).toHaveBeenCalledOnce();
+  act(() => worker.reply("requestId" in latest ? latest.requestId : -1, 2));
+  expect(screen.getByRole("status")).toBeEmptyDOMElement();
+});
+
+it("keeps rapid keyboard navigation ordered and reports worker failures", async () => {
+  const onChange = vi.fn();
+  render(<SessionSearchToolbar detail={detail} scope="timeline" onChange={onChange} ref={createRef<SessionSearchHandle>()} />);
+  const input = screen.getByRole("searchbox");
+  fireEvent.keyDown(window, { key: "f", ctrlKey: true });
+  expect(input).toHaveFocus();
+  fireEvent.change(input, { target: { value: "needle" } });
+  await act(() => vi.advanceTimersByTimeAsync(150));
+  const worker = SearchWorker.instances[0];
+  const request = worker.latestRequest();
+  act(() => worker.reply("requestId" in request ? request.requestId : -1));
+  fireEvent.keyDown(input, { key: "Enter" });
+  const first = worker.latestRequest();
+  fireEvent.keyDown(input, { key: "Enter" });
+  const second = worker.latestRequest();
+  expect(second).toMatchObject({ type: "select", index: 2 });
+  act(() => worker.reply("requestId" in first ? first.requestId : -1, 1));
+  expect(screen.getByRole("status")).toHaveTextContent("1 / 3");
+  act(() => worker.reply("requestId" in second ? second.requestId : -1, 2));
+  expect(screen.getByRole("status")).toHaveTextContent("3 / 3");
+  fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+  expect(worker.latestRequest()).toMatchObject({ type: "select", index: 1 });
+  act(() => worker.onerror?.());
+  expect(screen.getByRole("status")).toHaveTextContent("Search unavailable");
+  expect(onChange.mock.lastCall?.[0]).toMatchObject({ pending: false, error: true, hit: null });
+});
