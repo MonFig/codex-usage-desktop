@@ -580,7 +580,6 @@
       "search_previous": "前の一致（Shift+Enter）",
       "search_next": "次の一致（Enter）",
       "search_clear": "検索をクリア",
-      "search_position": "文字位置 {{position}}",
       "refresh": "このセッションを更新",
       "refresh_error": "更新に失敗しました",
       "modal_title": "セッションの詳細",

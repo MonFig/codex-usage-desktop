@@ -5,7 +5,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
 import type { SessionReplayDetail } from "@/lib/api";
 import type { SessionSearchRequest, SessionSearchResponse } from "@/lib/session-search";
-import { SessionSearchToolbar, type SessionSearchHandle } from "./session-search";
+import { buildSearchDocuments, SessionSearchIndex } from "@/lib/session-search";
+import { SessionSearchContext, SessionSearchText, SessionSearchToolbar, type SessionSearchHandle } from "./session-search";
 
 class SearchWorker {
   static instances: SearchWorker[] = [];
@@ -91,4 +92,27 @@ it("keeps rapid keyboard navigation ordered and reports worker failures", async 
   act(() => worker.onerror?.());
   expect(screen.getByRole("status")).toHaveTextContent("Search unavailable");
   expect(onChange.mock.lastCall?.[0]).toMatchObject({ pending: false, error: true, hit: null });
+});
+
+it("highlights the original field, allows full text expansion, and restores its normal rendering", async () => {
+  const text = `${"before\n".repeat(6000)}Needle${"\nafter".repeat(6000)}`;
+  const turns: SessionReplayDetail["turns"] = [{
+    turnId: "long", startedAt: null, completedAt: null, durationMs: null, systemMessages: [], userMessages: [], assistantMessages: [],
+    reasoningSummaries: [], toolCalls: [], patchResults: [], tokenEvents: [], errors: [],
+    items: [{ kind: "message", role: "user", text, timestamp: null, source: "message" }],
+  }];
+  const index = new SessionSearchIndex(buildSearchDocuments(turns), "");
+  const hit = (await index.search("needle", "timeline", async () => {}))!.hit;
+  const view = (active: typeof hit, full = false) => <SessionSearchContext value={active}><SessionSearchText text={text} full={full}><p>Normal preview</p></SessionSearchText></SessionSearchContext>;
+  const { rerender } = render(view(hit));
+  expect(screen.getByTestId("session-search-current")).toHaveTextContent("Needle");
+  expect(screen.getByTestId("session-search-window").textContent!.length).toBeLessThan(8500);
+  rerender(view(hit, true));
+  expect(screen.getByTestId("session-search-window").textContent).toBe(text);
+  rerender(view(hit));
+  fireEvent.click(screen.getByRole("button", { name: "Show full text" }));
+  expect(screen.getByTestId("session-search-window").textContent).toBe(text);
+  rerender(view(null));
+  expect(screen.getByText("Normal preview")).toBeInTheDocument();
+  expect(screen.queryByTestId("session-search-current")).not.toBeInTheDocument();
 });

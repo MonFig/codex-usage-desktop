@@ -3,7 +3,7 @@ import {
   parseToolContentBlocks, parseUserInputAnswers, processSignal, splitWebSearchResults, summarizeOutput,
   type ConversationBlock, type DisplayTokenUsageItem, type ExecOutput, type NestedActivity, type ReplayItem, type TimelineEntry, type TokenUsageItem, type ToolActivity, type UserInputQuestion, type WebSearchResult,
 } from "@/lib/session-conversation";
-import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, Bot, Check, ChevronDown, ChevronRight, Clipboard, Clock3, Coins, Database, FileDiff, FileJson, FolderOpen, GitBranch, Info, List, Loader2, RefreshCcw, MessageSquare, Terminal, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -15,7 +15,8 @@ import { SessionQuotaUsageView } from "./session-quota-usage";
 import { SessionArchivedBadge } from "./session-archived-badge";
 import { MetricBadge } from "./metric-badge";
 import { useModalFocus } from "@/hooks/use-modal-focus";
-import { SessionSearchHitView, SessionSearchToolbar, type SessionSearchHandle, type SessionSearchState } from "./session-search";
+import { SessionSearchContext, SessionSearchTarget, SessionSearchText, SessionSearchToolbar, useSessionSearchExpansion, type SessionSearchHandle, type SessionSearchState } from "./session-search";
+import type { SessionSearchHit } from "@/lib/session-search";
 
 type SessionDetailModalProps = {
   session: SessionDetailRow;
@@ -31,6 +32,9 @@ const RAW_PREVIEW_LINES = 12;
 const RAW_PREVIEW_LINE_LENGTH = 240;
 const COLLAPSED_PREVIEW_LINE_LENGTH = 240;
 const COLLAPSED_AGENT_LIMIT = 3;
+const NESTED_TOOL_NAMES: Record<NestedActivity["kind"], string> = {
+  command: "exec_command", terminal: "write_stdin", patch: "apply_patch", image: "view_image", webSearch: "web__run", webOpen: "web__run",
+};
 const DISCLOSURE_BUTTON_CLASS = "rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 const MarkdownContent = lazy(() => import("./markdown-content").then((module) => ({ default: module.MarkdownContent })));
 
@@ -366,7 +370,7 @@ function TextBlock({
   titleClassName?: string;
 }) {
   const { t } = useTranslation();
-  const [isFullVisible, setIsFullVisible] = useState(!defaultCollapsed && text.length <= LONG_TEXT_THRESHOLD);
+  const [isFullVisible, setIsFullVisible] = useSessionSearchExpansion(!defaultCollapsed && text.length <= LONG_TEXT_THRESHOLD);
   const isLong = text.length > LONG_TEXT_THRESHOLD;
   const preview = isLong ? `${text.slice(0, TEXT_PREVIEW_LENGTH)}...` : text;
 
@@ -374,12 +378,12 @@ function TextBlock({
     <div className="py-2">
       <div className={`mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] ${titleClassName}`}>{title}</div>
       {markdown ? (
-        <Suspense fallback={<pre className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{text}</pre>}>
+        <SessionSearchText text={text}><Suspense fallback={<pre className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{text}</pre>}>
           <MarkdownContent content={isFullVisible ? text : preview} />
-        </Suspense>
+        </Suspense></SessionSearchText>
       ) : (
         <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
-          {isFullVisible ? text : preview}
+          <SessionSearchText text={text}>{isFullVisible ? text : preview}</SessionSearchText>
         </pre>
       )}
       {isLong ? (
@@ -400,7 +404,7 @@ function TextBlock({
 function MessageItem({ item, tokenUsage, rawJsonl }: { item: Extract<ReplayItem, { kind: "message" }>; tokenUsage?: TokenUsageItem; rawJsonl: string[] }) {
   const { t } = useTranslation();
   const isConversation = item.role === "user" || item.role === "assistant";
-  const [isExpanded, setIsExpanded] = useState(isConversation);
+  const [isExpanded, setIsExpanded] = useSessionSearchExpansion(isConversation);
   const toneKey = item.role === "user" || item.role === "assistant" || item.role === "developer" ? item.role : "system";
   const title = t(`sessions.detail.${toneKey}`);
 
@@ -421,9 +425,9 @@ function MessageItem({ item, tokenUsage, rawJsonl }: { item: Extract<ReplayItem,
         </span>
       </button>
       {isExpanded ? (
-        <Suspense fallback={<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{item.text}</p>}>
+        <SessionSearchText text={item.text}><Suspense fallback={<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{item.text}</p>}>
           <MarkdownContent content={item.text} />
-        </Suspense>
+        </Suspense></SessionSearchText>
       ) : <p className="line-clamp-3 whitespace-pre-wrap break-words text-sm text-muted-foreground">{buildCollapsedPreview(item.text, 3)}</p>}
       <div className="mt-2 flex justify-end"><CopyContentButton content={item.text} /></div>
       <RawJsonlDisclosure rawJsonl={rawJsonl} />
@@ -436,7 +440,7 @@ function ToolTextBlock({ title, text }: { title: string; text: string }) {
   return (
     <div className="py-2">
       <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{title}</div>
-      <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">{displayText}</pre>
+      <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground"><SessionSearchText text={displayText} /></pre>
     </div>
   );
 }
@@ -518,8 +522,12 @@ function numberPatchLines(lines: string[]) {
 
 function PatchDiffBlock({ patch, expanded, hideHeader = false }: { patch: string; expanded: boolean; hideHeader?: boolean }) {
   const { t } = useTranslation();
+  const hit = useContext(SessionSearchContext);
   const { files, additions, deletions, label } = patchSummary(patch, t);
 
+  if (hit && hit.length === patch.length && (hit.field === "patch_input" || hit.field === "command")) {
+    return <ToolTextBlock title={t("sessions.detail.patch_input")} text={patch} />;
+  }
   if (files.length === 0) {
     return expanded
       ? <ToolTextBlock title={t("sessions.detail.patch_input")} text={patch} />
@@ -568,7 +576,7 @@ function PatchDiffBlock({ patch, expanded, hideHeader = false }: { patch: string
   );
 }
 
-function ActivityOutput({ text, expanded, tone }: { text: string; expanded: boolean; tone: string }) {
+function ActivityOutput({ text, expanded, tone, field = "output" }: { text: string; expanded: boolean; tone: string; field?: string }) {
   const { t } = useTranslation();
   const preview = summarizeOutput(text);
   const output = expanded ? text : [
@@ -576,12 +584,19 @@ function ActivityOutput({ text, expanded, tone }: { text: string; expanded: bool
     ...(preview.omitted ? [t("sessions.detail.omitted_lines", { count: preview.omitted })] : []),
     ...preview.tail,
   ].join("\n");
-  return <pre className={`mt-1 whitespace-pre-wrap break-words border-l border-border/60 pl-4 ${tone}`}>{`└ ${output}`}</pre>;
+  return <pre className={`mt-1 whitespace-pre-wrap break-words border-l border-border/60 pl-4 ${tone}`}>└ <SessionSearchText text={text} field={field}>{output}</SessionSearchText></pre>;
+}
+
+function SearchSourceField({ field, text }: { field: string; text: string | null | undefined }) {
+  const hit = useContext(SessionSearchContext);
+  const { t } = useTranslation();
+  return hit?.field === field && text && text.length === hit.length && text.slice(hit.windowStart, hit.windowStart + hit.text.length) === hit.text
+    ? <ToolTextBlock title={t(`sessions.detail.${field}`)} text={text} /> : null;
 }
 
 function ExecResultItem({ output, index }: { output: ExecOutput; index: number }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useSessionSearchExpansion();
   const failed = output.rejected || (output.exitCode !== null && output.exitCode !== 0);
   return <div className={`rounded-md border p-2 ${failed ? ITEM_TONES.error : "border-border/50"}`}>
     <button type="button" className={`flex w-full items-center justify-between text-left ${DISCLOSURE_BUTTON_CLASS}`} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
@@ -589,13 +604,13 @@ function ExecResultItem({ output, index }: { output: ExecOutput; index: number }
       {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
     </button>
     {output.stdout ? <ActivityOutput text={cleanExecOutput(output.stdout)} expanded={expanded} tone={failed ? "text-error" : "text-muted-foreground"} /> : null}
-    {output.stderr ? <ActivityOutput text={output.stderr} expanded={expanded} tone="text-error" /> : null}
+    {output.stderr ? <ActivityOutput field="stderr" text={output.stderr} expanded={expanded} tone="text-error" /> : null}
   </div>;
 }
 
 function NestedActivityItem({ activity }: { activity: NestedActivity }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useSessionSearchExpansion();
 
   if (activity.kind === "terminal") {
     const text = [activity.output?.stdout, activity.output?.stderr].filter(Boolean).join("\n");
@@ -629,7 +644,7 @@ function NestedActivityItem({ activity }: { activity: NestedActivity }) {
   if (activity.kind === "image") {
     return <div className="py-1.5">
       <button type="button" className={`flex w-full items-start justify-between gap-3 text-left ${DISCLOSURE_BUTTON_CLASS}`} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
-        <span className="min-w-0"><span className="font-semibold"><span className="mr-1.5 text-muted-foreground">•</span>{t("sessions.detail.viewed_image")}</span><span className="mt-1 block break-all border-l border-border/60 pl-4 text-muted-foreground">└ {activity.path}</span></span>
+        <span className="min-w-0"><span className="font-semibold"><span className="mr-1.5 text-muted-foreground">•</span>{t("sessions.detail.viewed_image")}</span><span className="mt-1 block break-all border-l border-border/60 pl-4 text-muted-foreground">└ <SessionSearchText text={activity.path} field="file_path" /></span></span>
         <span className="flex shrink-0 items-center gap-2 text-muted-foreground">{activity.imageUrl ? expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" /> : null}</span>
       </button>
       {expanded && activity.imageUrl ? <img src={activity.imageUrl} alt={activity.path} loading="lazy" className="ml-4 mt-2 max-h-80 max-w-[calc(100%-1rem)] rounded-md border border-border/60 bg-background object-contain" /> : null}
@@ -639,12 +654,13 @@ function NestedActivityItem({ activity }: { activity: NestedActivity }) {
   const failed = activity.status === "failed" || activity.status === "declined" || activity.output?.rejected || (activity.output?.exitCode != null && activity.output.exitCode !== 0);
   const stdout = activity.output?.stdout ? cleanExecOutput(activity.output.stdout) : null;
   return <div className="py-1.5">
+    <SearchSourceField field="working_directory" text={activity.workdir} />
     <button type="button" className={`flex w-full min-w-0 items-start justify-between gap-3 text-left ${DISCLOSURE_BUTTON_CLASS}`} aria-expanded={expanded} onClick={() => setExpanded((value) => !value)}>
-      <span className="flex min-w-0 gap-1.5"><span className={failed ? "shrink-0 text-error" : "shrink-0 text-muted-foreground"}>•</span><span className="min-w-0 whitespace-pre-wrap break-words"><span className="font-semibold">{t(activity.status === "running" ? "sessions.detail.activity_running" : "sessions.detail.activity_ran")}</span> {expanded ? activity.command : buildCollapsedPreview(activity.command, 1)}</span></span>
+      <span className="flex min-w-0 gap-1.5"><span className={failed ? "shrink-0 text-error" : "shrink-0 text-muted-foreground"}>•</span><span className="min-w-0 whitespace-pre-wrap break-words"><span className="font-semibold">{t(activity.status === "running" ? "sessions.detail.activity_running" : "sessions.detail.activity_ran")}</span> {expanded ? <SessionSearchText text={activity.command} field="command" /> : buildCollapsedPreview(activity.command, 1)}</span></span>
       <span className="flex shrink-0 items-center gap-2 text-muted-foreground">{expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}</span>
     </button>
     {stdout ? <ActivityOutput text={stdout} expanded={expanded} tone={failed ? "text-error" : "text-muted-foreground"} /> : null}
-    {activity.output?.stderr ? <ActivityOutput text={activity.output.stderr} expanded={expanded} tone="text-error" /> : null}
+    {activity.output?.stderr ? <ActivityOutput field="stderr" text={activity.output.stderr} expanded={expanded} tone="text-error" /> : null}
   </div>;
 }
 
@@ -668,10 +684,10 @@ function UserInputItem({ item, questions, tokenUsage, rawJsonl }: { item: Extrac
 
           return (
             <section key={question.id} className="py-2">
-              {question.header ? <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{question.header}</div> : null}
+              {question.header ? <div className="text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground"><SessionSearchText text={question.header} /></div> : null}
               <div className="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">
                 <Suspense fallback={question.question}>
-                  <MarkdownContent content={question.question} />
+                  <SessionSearchText text={question.question}><MarkdownContent content={question.question} /></SessionSearchText>
                 </Suspense>
               </div>
               {question.options.length > 0 ? <ol className="mt-3 space-y-2">
@@ -686,8 +702,8 @@ function UserInputItem({ item, questions, tokenUsage, rawJsonl }: { item: Extrac
                         {isSelected ? <Check className="h-3 w-3" /> : index + 1}
                       </span>
                       <span className="min-w-0">
-                        <span className="block text-sm font-medium text-foreground">{option.label}</span>
-                        {option.description ? <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">{option.description}</span> : null}
+                        <span className="block text-sm font-medium text-foreground"><SessionSearchText text={option.label} /></span>
+                        {option.description ? <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground"><SessionSearchText text={option.description} /></span> : null}
                       </span>
                     </li>
                   );
@@ -700,7 +716,7 @@ function UserInputItem({ item, questions, tokenUsage, rawJsonl }: { item: Extrac
                   </span>
                   <span className="min-w-0">
                     <span className="block text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">{t("sessions.detail.custom_answer")}</span>
-                    <span className="mt-0.5 block whitespace-pre-wrap break-words text-sm text-foreground">{answer}</span>
+                    <span className="mt-0.5 block whitespace-pre-wrap break-words text-sm text-foreground"><SessionSearchText text={answer} /></span>
                   </span>
                 </div>
               ))}
@@ -733,8 +749,9 @@ function WebSearchItem({
   rawJsonl: string[];
 }) {
   const { t } = useTranslation();
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useSessionSearchExpansion();
   const contentBlocks = parseToolContentBlocks(output);
+  const hit = useContext(SessionSearchContext);
   const text = contentBlocks?.text ?? output;
   const results = text ? splitWebSearchResults(text) : [];
   const searchLabel = action === "open"
@@ -756,7 +773,7 @@ function WebSearchItem({
               <span className="shrink-0 text-muted-foreground">•</span>
               <span className="min-w-0 break-words">
                 <span className="font-semibold">{query ? searchLabel : t("sessions.detail.web_search")}</span>
-                {query ? ` ${query}` : null}
+                {query ? <> <SessionSearchText text={query} field="arguments" /></> : null}
               </span>
             </span>
           ))}
@@ -768,15 +785,16 @@ function WebSearchItem({
         </span>
       </button>
       {isExpanded ? <div className="ml-4 mt-2 space-y-2">
-        {structuredResults ? (
+        {hit?.field === "output" && text ? <ToolTextBlock title={t("sessions.detail.output")} text={cleanExecOutput(text)} /> : structuredResults ? (
           <div className="space-y-2">
             {structuredResults.map((result, index) => (
               <article key={`${index}-${result.url ?? result.title}`} className="py-2">
                 {result.url ? (
-                  <a href={result.url} target="_blank" rel="noreferrer" className="block break-words text-sm font-semibold text-primary hover:underline">{result.title}</a>
-                ) : <div className="break-words text-sm font-semibold text-foreground">{result.title}</div>}
+                  <a href={result.url} target="_blank" rel="noreferrer" className="block break-words text-sm font-semibold text-primary hover:underline"><SessionSearchText text={result.title} /></a>
+                ) : <div className="break-words text-sm font-semibold text-foreground"><SessionSearchText text={result.title} /></div>}
                 {result.domain ? <div className="mt-1 text-xs text-muted-foreground">{result.domain}</div> : null}
-                {result.snippet ? <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">{result.snippet}</p> : null}
+                {hit?.field === "search_result" && result.url ? <SessionSearchText text={result.url} /> : null}
+                {result.snippet ? <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground"><SessionSearchText text={result.snippet} /></p> : null}
               </article>
             ))}
           </div>
@@ -795,7 +813,7 @@ function WebSearchItem({
 
 function BackgroundTerminalItem({ input, output, result, tokenUsage, rawJsonl }: { input: string; output: string | null; result?: ExecOutput | null; tokenUsage?: TokenUsageItem; rawJsonl: string[] }) {
   const { t } = useTranslation();
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useSessionSearchExpansion();
   const waitedOnly = input.length === 0;
   const failed = result?.rejected || (result?.exitCode != null && result.exitCode !== 0);
   const running = !failed && result?.exitCode == null && result?.sessionId != null;
@@ -822,7 +840,7 @@ function BackgroundTerminalItem({ input, output, result, tokenUsage, rawJsonl }:
           {output ? isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" /> : null}
         </span>
       </button>
-      {!waitedOnly ? <pre className="mt-1 whitespace-pre-wrap break-words border-l border-border/60 pl-4 text-muted-foreground">{`└ ${input}`}</pre> : null}
+      {!waitedOnly ? <pre className="mt-1 whitespace-pre-wrap break-words border-l border-border/60 pl-4 text-muted-foreground">└ <SessionSearchText text={input} field="command" /></pre> : null}
       {isExpanded && output ? <ActivityOutput text={output} expanded tone={failed ? "text-error" : "text-muted-foreground"} /> : null}
       <RawJsonlDisclosure rawJsonl={rawJsonl} />
     </div>
@@ -831,7 +849,7 @@ function BackgroundTerminalItem({ input, output, result, tokenUsage, rawJsonl }:
 
 function SleepItem({ activity, tokenUsage, rawJsonl }: { activity: ToolActivity; tokenUsage?: TokenUsageItem; rawJsonl: string[] }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useSessionSearchExpansion();
   const sleep = activity.sleep!;
   const duration = sleep.durationMs === null ? null : t("sessions.detail.sleep_seconds", {
     seconds: (sleep.durationMs / 1000).toLocaleString(undefined, { maximumFractionDigits: 3 }),
@@ -871,7 +889,7 @@ function SleepItem({ activity, tokenUsage, rawJsonl }: { activity: ToolActivity;
 
 function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: ToolActivity; item: Extract<ReplayItem, { kind: "toolCall" }>; tokenUsage?: TokenUsageItem; rawJsonl: string[] }) {
   const { t } = useTranslation();
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useSessionSearchExpansion();
   const { outerToolName, backgroundTerminalInput, userInputQuestions, webSearchQueries, webOpenReferences, webSearchResults, nestedActivities, unpairedOutputs, unparsedOutputText, retainedArguments, execArguments, argumentEntries, contentBlocks, argumentsText, displayToolName, outputText, stderrText } = activity;
   const argumentsTitle = execArguments?.kind === "patch"
     ? t("sessions.detail.patch_input")
@@ -906,14 +924,14 @@ function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: Tool
       {tokenUsage ? <div className="mb-2 flex justify-end"><TokenMetadata usage={tokenUsage} /></div> : null}
       <div className="space-y-1">
         {nestedActivities.map((nestedActivity, index) => (
-          <NestedActivityItem
-            key={nestedActivity.kind === "command" && nestedActivity.callId ? nestedActivity.callId : `${nestedActivity.kind}-${index}`}
-            activity={nestedActivity}
-          />
+          <SessionSearchTarget key={nestedActivity.kind === "command" && nestedActivity.callId ? nestedActivity.callId : `${nestedActivity.kind}-${index}`} target={`nested-${index}`}>
+            <SearchSourceField field="sleep_tool" text={NESTED_TOOL_NAMES[nestedActivity.kind]} />
+            <NestedActivityItem activity={nestedActivity} />
+          </SessionSearchTarget>
         ))}
       </div>
       {retainedArguments ? <ToolTextBlock title={argumentsTitle} text={retainedArguments} /> : null}
-      {unpairedOutputs.map((output, index) => <ExecResultItem key={index} output={output} index={index} />)}
+      {unpairedOutputs.map((output, index) => <SessionSearchTarget key={index} target={`output-${index}`}><ExecResultItem output={output} index={index} /></SessionSearchTarget>)}
       {unparsedOutputText || stderrText ? <div className="mt-2">
         <button
           type="button"
@@ -925,7 +943,7 @@ function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: Tool
           {isExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
         </button>
         {unparsedOutputText ? <ActivityOutput text={unparsedOutputText} expanded={isExpanded} tone="text-muted-foreground" /> : null}
-        {stderrText ? <ActivityOutput text={stderrText} expanded={isExpanded} tone="text-error" /> : null}
+        {stderrText ? <ActivityOutput field="stderr" text={stderrText} expanded={isExpanded} tone="text-error" /> : null}
       </div> : null}
       <RawJsonlDisclosure rawJsonl={rawJsonl} />
     </div>;
@@ -966,7 +984,7 @@ function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: Tool
                   ? t("sessions.detail.activity_stopped")
                   : t("sessions.detail.activity_ran")}
               {activityStatus === "stopped" && signal ? ` (${signal}) ` : " "}
-              {isExpanded ? execArguments.command : buildCollapsedPreview(execArguments.command, 1)}
+              {isExpanded ? <SessionSearchText text={execArguments.command} field="command" /> : buildCollapsedPreview(execArguments.command, 1)}
             </span>
           </span>
           <span className="flex shrink-0 items-center gap-3 font-sans text-muted-foreground">
@@ -977,9 +995,10 @@ function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: Tool
             </span>
           </span>
         </button>
+        <SearchSourceField field="working_directory" text={execArguments.workdir} />
         {commandOutput ? <ActivityOutput text={commandOutput} expanded={isExpanded} tone={outputTone} /> : null}
         {stderrText ? (
-          <ActivityOutput text={stderrText} expanded={isExpanded} tone="text-error" />
+          <ActivityOutput field="stderr" text={stderrText} expanded={isExpanded} tone="text-error" />
         ) : null}
         <RawJsonlDisclosure rawJsonl={rawJsonl} />
       </div>
@@ -1022,7 +1041,7 @@ function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: Tool
                   {t(`sessions.detail.tool_argument_labels.${key}`, { defaultValue: key.replaceAll("_", " ") })}
                 </div>
                 <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">
-                  {formatToolArgumentValue(value)}
+                  <SessionSearchText text={formatToolArgumentValue(value)} field="arguments" />
                 </pre>
               </div>
             ))}
@@ -1031,10 +1050,10 @@ function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: Tool
         {execArguments?.workdir ? (
           <div className="rounded-md border border-border/50 bg-muted/35 px-3 py-2 text-xs">
             <span className="font-semibold text-muted-foreground">{t("sessions.detail.working_directory")}: </span>
-            <span className="break-all font-mono text-foreground">{execArguments.workdir}</span>
+            <span className="break-all font-mono text-foreground"><SessionSearchText text={execArguments.workdir} field="working_directory" /></span>
           </div>
         ) : null}
-        {unpairedOutputs.map((output, index) => <ExecResultItem key={index} output={output} index={index} />)}
+        {unpairedOutputs.map((output, index) => <SessionSearchTarget key={index} target={`output-${index}`}><ExecResultItem output={output} index={index} /></SessionSearchTarget>)}
         {outputText ? (
           isExpanded
             ? <ToolTextBlock title={t("sessions.detail.output")} text={outputText} />
@@ -1073,7 +1092,7 @@ function ToolCallItem({ item, activity, tokenUsage, rawJsonl }: { activity: Tool
 
 function PatchItem({ item, tokenUsage, rawJsonl }: { item: Extract<ReplayItem, { kind: "patch" }>; tokenUsage?: TokenUsageItem; rawJsonl: string[] }) {
   const { t } = useTranslation();
-  const [isExpanded, setIsExpanded] = useState(false);
+  const [isExpanded, setIsExpanded] = useSessionSearchExpansion();
   const isError = item.isError || item.success === false;
 
   return (
@@ -1119,7 +1138,7 @@ function TimelineItem({ item, activity, tokenUsage, rawJsonlLines }: TimelineEnt
       </div>
     );
   } else if (item.kind === "toolCall") {
-    content = <ToolCallItem item={item} activity={activity!} tokenUsage={tokenUsage} rawJsonl={rawJsonl} />;
+    content = <><SearchSourceField field="sleep_tool" text={activity!.displayToolName} /><ToolCallItem item={item} activity={activity!} tokenUsage={tokenUsage} rawJsonl={rawJsonl} /></>;
   } else if (item.kind === "patch") {
     if (!item.isError && item.success !== false) return null;
     content = <PatchItem item={item} tokenUsage={tokenUsage} rawJsonl={rawJsonl} />;
@@ -1131,11 +1150,11 @@ function TimelineItem({ item, activity, tokenUsage, rawJsonlLines }: TimelineEnt
       </div>
     );
   } else if (item.kind === "error") {
-    content = <div className={`flex flex-wrap items-start justify-between gap-3 rounded-lg border p-3 text-sm ${ITEM_TONES.error} ${ITEM_TITLE_TONES.error}`}><span>{item.text}</span>{tokenUsage ? <TokenMetadata usage={tokenUsage} /> : null}<RawJsonlDisclosure rawJsonl={rawJsonl} /></div>;
+    content = <div className={`flex flex-wrap items-start justify-between gap-3 rounded-lg border p-3 text-sm ${ITEM_TONES.error} ${ITEM_TITLE_TONES.error}`}><span><SessionSearchText text={item.text} /></span>{tokenUsage ? <TokenMetadata usage={tokenUsage} /> : null}<RawJsonlDisclosure rawJsonl={rawJsonl} /></div>;
   } else {
     content = (
       <div className={`flex flex-wrap items-start justify-between gap-3 rounded-lg border px-3 py-2 text-xs ${ITEM_TONES.notice} ${ITEM_TITLE_TONES.notice}`}>
-        <span>{item.label}{item.text ? ` · ${item.text}` : ""}</span>
+        <span><SessionSearchText text={[item.label, item.text].filter(Boolean).join(" · ")} /></span>
         {tokenUsage ? <TokenMetadata usage={tokenUsage} /> : null}
         <RawJsonlDisclosure rawJsonl={rawJsonl} />
       </div>
@@ -1145,10 +1164,11 @@ function TimelineItem({ item, activity, tokenUsage, rawJsonlLines }: TimelineEnt
   return content;
 }
 
-export function ConversationItem({ block, rawJsonlLines }: { block: ConversationBlock; rawJsonlLines: string[] }) {
+export function ConversationItem({ block, rawJsonlLines, searchHit = null }: { block: ConversationBlock; rawJsonlLines: string[]; searchHit?: SessionSearchHit | null }) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(false);
-  if (block.kind === "item") return <TimelineItem {...block.entry} rawJsonlLines={rawJsonlLines} />;
+  const [userExpanded, setExpanded] = useState(false);
+  const expanded = userExpanded || searchHit !== null;
+  if (block.kind === "item") return <SessionSearchContext value={searchHit}><TimelineItem {...block.entry} rawJsonlLines={rawJsonlLines} /></SessionSearchContext>;
   // Merge adjacent reads only, retaining a badge for each original token event.
   const rows: { label: string; names: string[]; entries: TimelineEntry[] }[] = [];
   block.actions.forEach((actions, index) => {
@@ -1170,7 +1190,7 @@ export function ConversationItem({ block, rawJsonlLines }: { block: Conversation
         <span className="sr-only">{t(expanded ? "sessions.detail.collapse" : "sessions.detail.expand")}</span>
       </button>
       {expanded ? <div className="ml-2 mt-2 space-y-2 border-l border-border/60 pl-4">
-        {block.entries.map((entry, index) => <TimelineItem key={index} {...entry} rawJsonlLines={rawJsonlLines} />)}
+        {block.entries.map((entry, index) => <SessionSearchContext key={index} value={searchHit?.entryIndex === index ? searchHit : null}><TimelineItem {...entry} rawJsonlLines={rawJsonlLines} /></SessionSearchContext>)}
       </div> : <div className="ml-2 mt-2 space-y-2 border-l border-border/60 pl-4">
         {rows.map((row, index) => <div key={index} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
           <span className="min-w-0 break-words text-muted-foreground"><span className="mr-2 font-medium text-foreground">{row.label}</span>{row.names.join(", ")}</span>
@@ -1305,7 +1325,6 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
       && !text.startsWith("# AGENTS.md instructions for ")
       && !text.startsWith("<environment_context>");
   })?.text.trim().slice(0, 600) ?? "") ?? [], [detail]);
-  const isSearching = search?.active ?? false;
   const searchHit = search?.active && search.source === detail && search.scope === activeTab ? search.hit : null;
 
   useLayoutEffect(() => {
@@ -1314,7 +1333,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
       setActiveTurnKey(`${detail.turns[searchHit.turnIndex].turnId}-${searchHit.turnIndex}`);
     }
     const scroll = scrollRef.current;
-    const target = scroll?.querySelector<HTMLElement>("[data-session-search-hit]");
+    const target = scroll?.querySelector<HTMLElement>('[data-testid="session-search-current"]');
     if (scroll && target) {
       scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 16;
     }
@@ -1341,16 +1360,6 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   }
 
   function toggleTurn(key: string) {
-    if (isSearching) {
-      searchRef.current?.clear();
-      setExpandedTurns((current) => {
-        const next = new Set(current);
-        if (searchHit && key === `${detail!.turns[searchHit.turnIndex].turnId}-${searchHit.turnIndex}`) next.delete(key);
-        else next.add(key);
-        return next;
-      });
-      return;
-    }
     setExpandedTurns((current) => {
       const next = new Set(current);
       if (next.has(key)) {
@@ -1363,7 +1372,6 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   }
 
   function scrollToTurn(key: string, position: "start" | "end") {
-    if (isSearching) flushSync(() => searchRef.current?.clear());
     if (position === "end" && !expandedTurns.has(key)) {
       flushSync(() => setExpandedTurns((current) => new Set(current).add(key)));
     }
@@ -1556,7 +1564,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                     {detail.turns.map((turn, index) => {
                       const turnKey = `${turn.turnId}-${index}`;
                       const preview = navigationPreviews[index];
-                      const isActive = isSearching ? searchHit?.turnIndex === index : activeTurnKey === turnKey;
+                      const isActive = activeTurnKey === turnKey;
                       return (
                         <div
                           key={turnKey}
@@ -1590,7 +1598,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
               <AgentHierarchy agents={detail.agents ?? []} activePath={detail.path} onSelect={setActivePath} />
               {detail.turns.map((turn, index) => {
                 const turnKey = `${turn.turnId}-${index}`;
-                const isExpanded = isSearching ? searchHit?.turnIndex === index : expandedTurns.has(turnKey);
+                const isExpanded = expandedTurns.has(turnKey) || searchHit?.turnIndex === index;
                 const userPreview = turnPreviews[index];
                 return (
                 <section
@@ -1633,8 +1641,8 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                   </button>
                   {isExpanded ? (
                   <div className="mt-4 space-y-3">
-                    {searchHit ? <SessionSearchHitView hit={searchHit} /> : conversation[index].map((block, itemIndex) => (
-                      <ConversationItem key={itemIndex} block={block} rawJsonlLines={rawJsonlLines} />
+                    {conversation[index].map((block, itemIndex) => (
+                      <ConversationItem key={itemIndex} block={block} rawJsonlLines={rawJsonlLines} searchHit={searchHit?.turnIndex === index && searchHit.blockIndex === itemIndex ? searchHit : null} />
                     ))}
                   </div>
                   ) : null}
@@ -1644,7 +1652,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
               </div>
             </div>
           ) : (
-            isSearching ? <div className="mx-auto max-w-6xl">{searchHit ? <SessionSearchHitView hit={searchHit} /> : null}</div> : <div className="mx-auto flex h-full max-w-6xl flex-col gap-3">
+            <div className="mx-auto flex h-full max-w-6xl flex-col gap-3">
               <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-surface p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div className="space-y-1 text-sm">
                   <div className="font-semibold">{t("sessions.detail.raw_preview")}</div>
@@ -1671,8 +1679,8 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                   </Button>
                 </div>
               </div>
-              <pre className="min-h-[60vh] overflow-auto rounded-lg border border-border/60 bg-surface p-4 font-mono text-xs leading-relaxed text-foreground">
-                {showFullRaw ? detail.rawJsonl : rawPreview}
+              <pre className="min-h-[60vh] whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-surface p-4 font-mono text-xs leading-relaxed text-foreground">
+                <SessionSearchContext value={searchHit}><SessionSearchText text={detail.rawJsonl} full={showFullRaw}>{showFullRaw ? detail.rawJsonl : rawPreview}</SessionSearchText></SessionSearchContext>
               </pre>
             </div>
           )}

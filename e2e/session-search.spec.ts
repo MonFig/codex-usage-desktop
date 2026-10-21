@@ -6,7 +6,7 @@ import type { SessionReplayDetail } from "../src/lib/api";
 describe("session data search", () => {
   const run = process.env.CODEX_USAGE_ARCHIVE_E2E === "1" ? it : it.skip;
 
-  run("searches hidden and nested output, opening only the current bounded window", async () => {
+  run("finds text in place while preserving the conversation and raw JSONL controls", async () => {
     const sessions = join(process.env.CODEX_HOME!, "sessions", "2026", "10", "16");
     mkdirSync(sessions, { recursive: true });
     const id = "01977e3d-d9f6-72b7-93cf-f3f2f83c3888";
@@ -74,11 +74,14 @@ describe("session data search", () => {
       await expect(status).toHaveText("1 / 3");
       await expect(mark).toHaveText(needle);
       await expect(firstTurn).toHaveAttribute("aria-expanded", "true");
-      await expect(secondTurn).toHaveAttribute("aria-expanded", "false");
+      await expect(secondTurn).toHaveAttribute("aria-expanded", "true");
       await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(1);
       expect(await window.getText()).toContain("first occurrence");
       expect((await window.getText()).length).toBeLessThan(8500);
-      await expect(explored).not.toExist();
+      await expect(explored.$("button")).toHaveAttribute("aria-expanded", "true");
+      expect(await dialog.getText()).toContain("Search prompt 1");
+      expect(await dialog.getText()).toContain("Search prompt 2");
+      expect(await dialog.getText()).toContain("echo nested-one");
 
       await dialog.$('button[aria-label="Next match (Enter)"]').click();
       await expect(status).toHaveText("2 / 3");
@@ -86,16 +89,16 @@ describe("session data search", () => {
       await input.click();
       await browser.keys("Enter");
       await expect(status).toHaveText("3 / 3");
-      await expect(firstTurn).toHaveAttribute("aria-expanded", "false");
+      await expect(firstTurn).toHaveAttribute("aria-expanded", "true");
       await expect(secondTurn).toHaveAttribute("aria-expanded", "true");
       expect(await window.getText()).toContain("nested occurrence");
       await expect(dialog.$('nav[aria-label="Quick navigation"] [aria-current="location"]')).toHaveText("Search prompt 2");
       expect((await window.getText()).length).toBeLessThan(8500);
-      expect(await dialog.getText()).not.toContain("unrelated sibling output");
+      expect(await dialog.getText()).toContain("unrelated sibling output");
       await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(1);
       await browser.waitUntil(async () => mark.execute((element) => {
         const bounds = element.getBoundingClientRect();
-        const viewport = element.closest("pre")!.getBoundingClientRect();
+        const viewport = element.closest('[role="dialog"]')!.getBoundingClientRect();
         return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
       }), { timeoutMsg: "Deep match should be visible inside its text window" });
       await browser.saveScreenshot("/tmp/codex-usage-session-search-hit.png");
@@ -105,10 +108,14 @@ describe("session data search", () => {
       await input.setValue("no-such-session-search-text");
       await expect(status).toHaveText("No matches");
       await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(0);
+      await expect(firstTurn).toHaveAttribute("aria-expanded", "true");
+      await expect(secondTurn).toHaveAttribute("aria-expanded", "true");
+      expect(await dialog.getText()).toContain("Search prompt 1");
+      expect(await dialog.getText()).toContain("Search prompt 2");
       await input.setValue(needle);
       await expect(status).toHaveText("1 / 3");
       await dialog.$('button=Raw JSONL').click();
-      await dialog.$('[data-session-search-hit]').$('span=Raw JSONL').waitForExist();
+      await expect(dialog.$('button=Copy')).toExist();
       await expect(status).toHaveText("1 / 3");
       await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(1);
       expect((await window.getText()).length).toBeLessThan(8500);

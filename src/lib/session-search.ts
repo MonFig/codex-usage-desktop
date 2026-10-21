@@ -11,6 +11,7 @@ type SearchDocument = {
   entryIndex: number;
   field: string;
   context: string;
+  target?: string;
   text: string;
 };
 
@@ -36,8 +37,9 @@ export function buildSearchDocuments(turns: SessionReplayDetail["turns"]) {
     const entries = block.kind === "item" ? [block.entry] : block.entries;
     entries.forEach(({ item, activity }: TimelineEntry, entryIndex) => {
       const context = item.kind === "toolCall" ? activity!.displayToolName : "";
+      let target: string | undefined;
       const add = (field: string, text: string | null | undefined, label = context) => {
-        if (text) documents.push({ turnIndex, blockIndex, entryIndex, field, context: label, text });
+        if (text) documents.push({ turnIndex, blockIndex, entryIndex, field, context: label, target, text });
       };
       const output = (value: ExecOutput | null, label = context) => {
         add("output", value?.stdout ? cleanExecOutput(value.stdout) : null, label);
@@ -54,21 +56,37 @@ export function buildSearchDocuments(turns: SessionReplayDetail["turns"]) {
         if (activity.userInputQuestions) {
           const answers = parseUserInputAnswers(item.kind === "toolCall" ? item.output : null);
           for (const question of activity.userInputQuestions) {
-            add("user_input_request", [question.header, question.question].filter(Boolean).join("\n"));
-            for (const option of question.options) add("arguments", [option.label, option.description].filter(Boolean).join("\n"));
-            add("output", answers[question.id]?.join("\n"));
+            add("user_input_request", question.header);
+            add("user_input_request", question.question);
+            for (const option of question.options) {
+              add("arguments", option.label);
+              add("arguments", option.description);
+            }
+            for (const answer of answers[question.id] ?? []) add("output", answer);
           }
           return;
         }
         if (activity.webSearchQueries || activity.webOpenReferences || activity.webSearchResults) {
-          add("arguments", (activity.webSearchQueries ?? activity.webOpenReferences)?.join("\n"));
+          for (const query of activity.webSearchQueries ?? activity.webOpenReferences ?? []) add("arguments", query);
           if (activity.webSearchResults) {
-            for (const result of activity.webSearchResults) add("search_result", [result.title, result.url, result.snippet].filter(Boolean).join("\n"));
+            for (const result of activity.webSearchResults) {
+              add("search_result", result.title);
+              add("search_result", result.url);
+              add("search_result", result.snippet);
+            }
           } else add("output", activity.outputText ? cleanExecOutput(activity.outputText) : null);
           return;
         }
+        if (activity.backgroundTerminalInput !== null) {
+          add("command", activity.backgroundTerminalInput);
+          const response = [
+            ...(activity.unpairedOutputs.length ? activity.unpairedOutputs.flatMap((value) => [value.stdout, value.stderr]) : [activity.contentBlocks?.texts.join("\n") ?? activity.outputText]),
+            activity.unpairedOutputs.length ? activity.unparsedOutputText : null, activity.stderrText,
+          ].filter(Boolean).join("\n");
+          add("output", cleanExecOutput(response));
+          return;
+        }
         if (activity.nestedActivities) add("arguments", activity.retainedArguments);
-        else if (activity.backgroundTerminalInput !== null) add("command", activity.backgroundTerminalInput);
         else {
           add(activity.execArguments ? "command" : "arguments", activity.argumentsText);
           add("working_directory", activity.execArguments?.workdir);
@@ -77,7 +95,8 @@ export function buildSearchDocuments(turns: SessionReplayDetail["turns"]) {
           }
         }
         // Use the projected text, so encoded outputs and nested command records are searched once.
-        for (const nested of activity.nestedActivities ?? []) {
+        for (const [nestedIndex, nested] of (activity.nestedActivities ?? []).entries()) {
+          target = `nested-${nestedIndex}`;
           if (nested.kind === "command") {
             add("sleep_tool", "exec_command", nested.command.slice(0, 160));
             add("command", nested.command, "exec_command");
@@ -86,7 +105,7 @@ export function buildSearchDocuments(turns: SessionReplayDetail["turns"]) {
           } else if (nested.kind === "terminal") {
             add("sleep_tool", "write_stdin");
             add("command", nested.input, "write_stdin");
-            output(nested.output, "write_stdin");
+            add("output", cleanExecOutput([nested.output?.stdout, nested.output?.stderr].filter(Boolean).join("\n")), "write_stdin");
           } else if (nested.kind === "patch") {
             add("sleep_tool", "apply_patch");
             add("patch_input", nested.patch, "apply_patch");
@@ -95,11 +114,15 @@ export function buildSearchDocuments(turns: SessionReplayDetail["turns"]) {
             add("file_path", nested.path, "view_image");
           } else {
             add("sleep_tool", "web__run");
-            add("arguments", (nested.kind === "webSearch" ? nested.queries : nested.references).join("\n"), "web");
+            for (const query of nested.kind === "webSearch" ? nested.queries : nested.references) add("arguments", query, "web");
             add("output", nested.output ? cleanExecOutput(nested.output) : null, "web");
           }
         }
-        for (const value of activity.unpairedOutputs) output(value);
+        for (const [outputIndex, value] of activity.unpairedOutputs.entries()) {
+          target = `output-${outputIndex}`;
+          output(value);
+        }
+        target = undefined;
         const text = activity.nestedActivities ? activity.unparsedOutputText : activity.outputText;
         add("output", text ? formatJsonForDisplay(cleanExecOutput(text)) : null);
         add("stderr", activity.stderrText);

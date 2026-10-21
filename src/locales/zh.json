@@ -539,7 +539,6 @@
       "search_previous": "上一个匹配（Shift+Enter）",
       "search_next": "下一个匹配（Enter）",
       "search_clear": "清空搜索",
-      "search_position": "字符位置 {{position}}",
       "refresh": "刷新此会话",
       "refresh_error": "刷新失败",
       "modal_title": "会话详情",

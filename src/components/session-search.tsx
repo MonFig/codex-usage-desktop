@@ -1,4 +1,4 @@
-import { useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type Ref } from "react";
+import { createContext, useContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 import { ChevronDown, ChevronUp, Loader2, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SessionReplayDetail } from "@/lib/api";
@@ -151,27 +151,33 @@ export function SessionSearchToolbar({ detail, scope, onChange, ref }: {
   );
 }
 
-export function SessionSearchHitView({ hit }: { hit: SessionSearchHit }) {
+export const SessionSearchContext = createContext<SessionSearchHit | null>(null);
+
+// Search temporarily opens the current match without changing the user's disclosure state.
+export function useSessionSearchExpansion(initial = false) {
+  const hit = useContext(SessionSearchContext);
+  const [expanded, setExpanded] = useState(initial);
+  return [expanded || hit !== null, setExpanded] as const;
+}
+
+export function SessionSearchTarget({ target, children }: { target: string; children: ReactNode }) {
+  const hit = useContext(SessionSearchContext);
+  return <SessionSearchContext value={hit?.target === target ? hit : null}>{children}</SessionSearchContext>;
+}
+
+export function SessionSearchText({ text, field, full = false, children }: { text: string; field?: string; full?: boolean; children?: ReactNode }) {
+  const hit = useContext(SessionSearchContext);
   const { t } = useTranslation();
-  const viewportRef = useRef<HTMLPreElement>(null);
-  const markRef = useRef<HTMLElement>(null);
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current;
-    const mark = markRef.current;
-    if (viewport && mark) {
-      viewport.scrollTop += mark.getBoundingClientRect().top - viewport.getBoundingClientRect().top - viewport.clientHeight / 2;
-    }
-  }, [hit]);
-  return (
-    <article data-session-search-hit data-block-index={hit.blockIndex} data-entry-index={hit.entryIndex} className="min-w-0 rounded-lg border border-primary/50 bg-primary/5 p-3">
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span className="font-semibold text-foreground">{t(`sessions.detail.${hit.field}`, { defaultValue: hit.field, index: hit.entryIndex + 1 })}</span>
-        {hit.context ? <span className="min-w-0 truncate font-mono" title={hit.context}>{hit.context}</span> : null}
-        <span className="ml-auto">{t("sessions.detail.search_position", { position: hit.offset + 1 })}</span>
-      </div>
-      <pre ref={viewportRef} data-testid="session-search-window" className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-words rounded border border-border/60 bg-surface p-3 font-mono text-xs leading-relaxed">
-        {hit.windowStart > 0 ? "…\n" : ""}{hit.text.slice(0, hit.highlightStart)}<mark ref={markRef} className="rounded bg-yellow-300 text-black" data-testid="session-search-current">{hit.text.slice(hit.highlightStart, hit.highlightEnd)}</mark>{hit.text.slice(hit.highlightEnd)}{hit.windowStart + hit.text.length < hit.length ? "\n…" : ""}
-      </pre>
-    </article>
-  );
+  const [showFull, setShowFull] = useState(false);
+  if (!hit || (field && hit.field !== field) || text.length !== hit.length || text.slice(hit.windowStart, hit.windowStart + hit.text.length) !== hit.text) {
+    return <>{children ?? text}</>;
+  }
+  const bounded = text.length > 32_000 && !full && !showFull;
+  const content = bounded ? hit.text : text;
+  const start = bounded ? hit.highlightStart : hit.offset;
+  const end = start + hit.highlightEnd - hit.highlightStart;
+  return <span className="whitespace-pre-wrap break-words" data-session-search-hit>
+    <span data-testid="session-search-window">{bounded && hit.windowStart > 0 ? "…\n" : ""}{content.slice(0, start)}<mark className="rounded bg-yellow-300 text-black" data-testid="session-search-current">{content.slice(start, end)}</mark>{content.slice(end)}{bounded && hit.windowStart + content.length < text.length ? "\n…" : ""}</span>
+    {bounded ? <button type="button" className="mt-2 block text-xs text-primary hover:underline" onClick={() => setShowFull(true)}>{t("sessions.detail.show_full_text")}</button> : null}
+  </span>;
 }
