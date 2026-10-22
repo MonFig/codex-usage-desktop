@@ -5,7 +5,7 @@ import {
 } from "@/lib/session-conversation";
 import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
-import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, Bot, Check, ChevronDown, ChevronRight, Clipboard, Clock3, Coins, Database, FileDiff, FileJson, FolderOpen, GitBranch, Info, List, Loader2, RefreshCcw, MessageSquare, Terminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, Bot, Check, ChevronDown, ChevronRight, Clipboard, Clock3, Coins, Database, FileDiff, FileJson, FolderOpen, GitBranch, Info, List, Loader2, RefreshCcw, MessageSquare, Search, Terminal, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { fetchSessionDetail, rescanSession, revealInFileManager, type ScanResponse, type SessionDetailRow, type SessionReplayDetail } from "@/lib/api";
@@ -1220,17 +1220,34 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   const [expandedTurns, setExpandedTurns] = useState<Set<string>>(() => new Set());
   const [showFullRaw, setShowFullRaw] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
   const [collapsedHeight, setCollapsedHeight] = useState(0);
   const [activeTurnKey, setActiveTurnKey] = useState<string | null>(null);
   const [search, setSearch] = useState<SessionSearchState | null>(null);
   const searchRef = useRef<SessionSearchHandle>(null);
+  const searchButtonRef = useRef<HTMLButtonElement>(null);
   const summaryRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const turnRefs = useRef(new Map<string, HTMLElement>());
   useModalFocus(dialogRef, closeButtonRef, onClose);
+
+  useEffect(() => {
+    function handleSearchKey(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && detail) {
+        event.preventDefault();
+        setShowSearch(true);
+      } else if (event.key === "Escape" && showSearch) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeSearch();
+      }
+    }
+    window.addEventListener("keydown", handleSearchKey, true);
+    return () => window.removeEventListener("keydown", handleSearchKey, true);
+  }, [detail, showSearch]);
 
   useEffect(() => {
     setActivePath(session.path);
@@ -1249,6 +1266,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
     setExpandedTurns(new Set());
     setShowFullRaw(false);
     setShowDetails(false);
+    setShowSearch(false);
     setIsScrolled(false);
     setCollapsedHeight(0);
     setActiveTurnKey(null);
@@ -1371,6 +1389,12 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
     });
   }
 
+  function closeSearch() {
+    setShowSearch(false);
+    setSearch(null);
+    searchButtonRef.current?.focus({ preventScroll: true });
+  }
+
   function scrollToTurn(key: string, position: "start" | "end") {
     if (position === "end" && !expandedTurns.has(key)) {
       flushSync(() => setExpandedTurns((current) => new Set(current).add(key)));
@@ -1418,6 +1442,19 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                 <SessionArchivedBadge path={detail?.path ?? activePath} />
               </div>
             </div>
+            <button
+              ref={searchButtonRef}
+              type="button"
+              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 ${DISCLOSURE_BUTTON_CLASS}`}
+              title={t("sessions.detail.search_placeholder")}
+              aria-label={t("sessions.detail.search_placeholder")}
+              aria-expanded={showSearch}
+              aria-controls="session-detail-search"
+              disabled={!detail}
+              onClick={() => showSearch ? closeSearch() : setShowSearch(true)}
+            >
+              <Search aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
             <button
               type="button"
               className={`flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-semibold text-muted-foreground hover:bg-muted hover:text-foreground ${DISCLOSURE_BUTTON_CLASS}`}
@@ -1509,7 +1546,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
           </div>
         </header>
 
-        {detail ? <SessionSearchToolbar key={activePath} ref={searchRef} detail={detail} scope={activeTab} onChange={setSearch} /> : null}
+        {detail && showSearch ? <SessionSearchToolbar key={activePath} ref={searchRef} detail={detail} scope={activeTab} onChange={setSearch} /> : null}
         <div
           ref={scrollRef}
           data-testid="session-detail-scroll"

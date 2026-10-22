@@ -94,6 +94,7 @@ export function SessionSearchToolbar({ detail, scope, onChange, ref }: {
   }, [detail, scope, query, onChange]);
 
   useEffect(() => {
+    inputRef.current?.focus();
     function focusSearch(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
         event.preventDefault();
@@ -112,7 +113,7 @@ export function SessionSearchToolbar({ detail, scope, onChange, ref }: {
   }
 
   return (
-    <div role="search" className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-surface px-4 py-1.5">
+    <div id="session-detail-search" role="search" className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-surface px-4 py-1.5">
       <Search aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <input
         ref={inputRef}
