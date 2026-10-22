@@ -135,6 +135,7 @@ export function buildSearchDocuments(turns: SessionReplayDetail["turns"]) {
 }
 
 const CONTEXT_LENGTH = 4000;
+const MAX_VISIBLE_MATCHES = 200;
 
 export class SessionSearchIndex {
   private groups: { document: SearchDocument; offsets: number[]; first: number }[] = [];
@@ -196,18 +197,23 @@ export class SessionSearchIndex {
       else high = middle - 1;
     }
     const group = this.groups[low];
-    const matches = this.groups.map((matchGroup) => {
+    // Keep all offsets in the worker for counting/navigation, but bound the WebView's DOM work.
+    const limited = this.count > MAX_VISIBLE_MATCHES;
+    const matches = (limited ? [group] : this.groups).map((matchGroup) => {
       const current = matchGroup === group;
-      const offset = matchGroup.offsets[current ? index - matchGroup.first : 0];
+      const selected = current ? index - matchGroup.first : 0;
+      const offset = matchGroup.offsets[selected];
+      const start = Math.max(0, selected - Math.floor(MAX_VISIBLE_MATCHES / 2));
+      const offsets = limited ? matchGroup.offsets.slice(start, start + MAX_VISIBLE_MATCHES) : matchGroup.offsets;
       const { text, ...position } = matchGroup.document;
       const windowStart = Math.max(0, offset - CONTEXT_LENGTH);
       const end = Math.min(text.length, offset + this.queryLength + CONTEXT_LENGTH);
       return {
         ...position, offset, windowStart, text: text.slice(windowStart, end),
         highlightStart: offset - windowStart, highlightEnd: offset - windowStart + this.queryLength,
-        length: text.length, offsets: matchGroup.offsets, current,
+        length: text.length, offsets, current,
       };
     });
-    return { count: this.count, index, hit: matches[low], matches };
+    return { count: this.count, index, hit: matches[limited ? 0 : low], matches };
   }
 }

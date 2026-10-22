@@ -49,6 +49,25 @@ describe("session data search", () => {
     expect(await index.search("needle", "raw", yieldTask)).toMatchObject({ count: 2, hit: { turnIndex: -1, field: "raw_jsonl", offset: 2_000_008 } });
   });
 
+  it("bounds highlights for frequent queries while retaining every match for navigation", async () => {
+    const text = "common ".repeat(20_000);
+    const index = new SessionSearchIndex(buildSearchDocuments([turn([message(text), message(text)])]), text);
+    for (const scope of ["timeline", "raw"] as const) {
+      const count = scope === "timeline" ? 40_000 : 20_000;
+      expect(await index.search("common", scope, yieldTask)).toMatchObject({ count, index: 0 });
+      for (const selected of [0, 19_999, count - 1]) {
+        const result = index.select(selected);
+        expect(result).toMatchObject({ count, index: selected });
+        expect(result.matches.reduce((sum, hit) => sum + hit.offsets.length, 0)).toBeLessThanOrEqual(200);
+        expect(result.hit!.offsets).toContain(result.hit!.offset);
+        expect(result.hit!.offset).toBe((selected % 20_000) * 7);
+        expect(result.matches.filter((hit) => hit.current)).toEqual([result.hit]);
+      }
+      expect(index.select(count).index).toBe(0);
+      expect(index.select(-1).index).toBe(count - 1);
+    }
+  });
+
   it("searches decoded native output and nested pages once, without base64 images", async () => {
     const native = openTerminal[1].payload.item!;
     const documents = buildSearchDocuments([turn([{

@@ -142,9 +142,24 @@ describe("session data search", () => {
       })).toBe(true);
       await browser.saveScreenshot("/tmp/codex-usage-session-search-hit.png");
 
-      // A new query invalidates both debounced work and already-running worker responses.
-      await input.setValue("x");
-      await input.setValue("no-such-session-search-text");
+      // Common prefixes must not flood the WebView with tens of thousands of highlights.
+      await input.setValue("A long output");
+      await expect(status).toHaveText("1 / 60000");
+      expect(await dialog.execute((element) => element.querySelectorAll("mark").length)).toBeLessThanOrEqual(200);
+      await dialog.$('button[aria-label="Previous match (Shift+Enter)"]').click();
+      await expect(status).toHaveText("60000 / 60000");
+      await expect(currentMark()).toHaveText("A long output");
+      await dialog.$('button=Raw JSONL').click();
+      await expect(status).toHaveText("1 / 60000");
+      expect(await dialog.execute((element) => element.querySelectorAll("mark").length)).toBeLessThanOrEqual(200);
+      await dialog.$('button=Timeline').click();
+      await expect(status).toHaveText("1 / 60000");
+
+      // Rapid typing invalidates both debounced work and already-running worker responses.
+      const typingStarted = Date.now();
+      await input.addValue("-session-search-text");
+      await expect(input).toHaveValue("A long output-session-search-text");
+      expect(Date.now() - typingStarted).toBeLessThan(2000);
       await expect(status).toHaveText("No matches");
       await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(0);
       await expect(firstTurn).toHaveAttribute("aria-expanded", "true");

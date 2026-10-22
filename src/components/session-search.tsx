@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
+import { createContext, startTransition, useContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
 import { ChevronDown, ChevronUp, Eraser, Loader2, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SessionReplayDetail } from "@/lib/api";
@@ -68,7 +68,7 @@ export function SessionSearchToolbar({ detail, scope, onChange, onClose, ref }: 
     setPending(active && !failed.current);
     setError(failed.current);
     send({ type: "cancel" });
-    onChange({ ...EMPTY_RESULT, source: detail, scope, active, pending: active && !failed.current, error: failed.current });
+    startTransition(() => onChange({ ...EMPTY_RESULT, source: detail, scope, active, pending: active && !failed.current, error: failed.current }));
     const worker = workerRef.current;
     if (!worker || !active || failed.current) return;
     worker.onerror = () => {
@@ -76,14 +76,14 @@ export function SessionSearchToolbar({ detail, scope, onChange, onClose, ref }: 
       failed.current = true;
       setError(true);
       setPending(false);
-      onChange({ ...EMPTY_RESULT, source: detail, scope, active: true, pending: false, error: true });
+      startTransition(() => onChange({ ...EMPTY_RESULT, source: detail, scope, active: true, pending: false, error: true }));
     };
     worker.onmessage = ({ data }: MessageEvent<SessionSearchResponse>) => {
       if (data.requestId !== requestId.current) return;
       selectedIndex.current = data.index;
       setResult(data);
       setPending(false);
-      onChange({ ...data, source: detail, scope, active: true, pending: false, error: false });
+      startTransition(() => onChange({ ...data, source: detail, scope, active: true, pending: false, error: false }));
     };
     const timer = window.setTimeout(() => {
       send({ type: "search", requestId: id, query, scope });

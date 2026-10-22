@@ -3,7 +3,7 @@ import {
   parseToolContentBlocks, parseUserInputAnswers, processSignal, splitWebSearchResults, summarizeOutput,
   type ConversationBlock, type DisplayTokenUsageItem, type ExecOutput, type NestedActivity, type ReplayItem, type TimelineEntry, type TokenUsageItem, type ToolActivity, type UserInputQuestion, type WebSearchResult,
 } from "@/lib/session-conversation";
-import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { lazy, memo, Suspense, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { AlertTriangle, ArrowDownToLine, ArrowUpToLine, Bot, Check, ChevronDown, ChevronRight, Clipboard, Clock3, Coins, Database, FileDiff, FileJson, FolderOpen, GitBranch, Info, List, Loader2, RefreshCcw, MessageSquare, Search, Terminal, Wrench, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -1164,7 +1164,7 @@ function TimelineItem({ item, activity, tokenUsage, rawJsonlLines }: TimelineEnt
   return content;
 }
 
-export function ConversationItem({ block, rawJsonlLines, searchHits = [] }: { block: ConversationBlock; rawJsonlLines: string[]; searchHits?: SessionSearchHit[] }) {
+export const ConversationItem = memo(function ConversationItem({ block, rawJsonlLines, searchHits = [] }: { block: ConversationBlock; rawJsonlLines: string[]; searchHits?: SessionSearchHit[] }) {
   const { t } = useTranslation();
   const [userExpanded, setExpanded] = useState(false);
   const expanded = userExpanded || searchHits.length > 0;
@@ -1201,7 +1201,7 @@ export function ConversationItem({ block, rawJsonlLines, searchHits = [] }: { bl
       </div>}
     </section>
   );
-}
+});
 
 export function SessionDetailModal({ session, onClose, onScanComplete }: SessionDetailModalProps) {
   const { t } = useTranslation();
