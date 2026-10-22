@@ -538,6 +538,7 @@
       "search_error": "Search unavailable",
       "search_previous": "Previous match (Shift+Enter)",
       "search_next": "Next match (Enter)",
+      "search_close": "Close search",
       "search_clear": "Clear search",
       "refresh": "Refresh this session",
       "refresh_error": "Refresh failed",

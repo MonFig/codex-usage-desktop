@@ -538,6 +538,7 @@
       "search_error": "搜索暂不可用",
       "search_previous": "上一个匹配（Shift+Enter）",
       "search_next": "下一个匹配（Enter）",
+      "search_close": "关闭搜索",
       "search_clear": "清空搜索",
       "refresh": "刷新此会话",
       "refresh_error": "刷新失败",

@@ -522,10 +522,10 @@ function numberPatchLines(lines: string[]) {
 
 function PatchDiffBlock({ patch, expanded, hideHeader = false }: { patch: string; expanded: boolean; hideHeader?: boolean }) {
   const { t } = useTranslation();
-  const hit = useContext(SessionSearchContext);
+  const matches = useContext(SessionSearchContext);
   const { files, additions, deletions, label } = patchSummary(patch, t);
 
-  if (hit && hit.length === patch.length && (hit.field === "patch_input" || hit.field === "command")) {
+  if (matches.some((hit) => hit.length === patch.length && (hit.field === "patch_input" || hit.field === "command"))) {
     return <ToolTextBlock title={t("sessions.detail.patch_input")} text={patch} />;
   }
   if (files.length === 0) {
@@ -588,9 +588,9 @@ function ActivityOutput({ text, expanded, tone, field = "output" }: { text: stri
 }
 
 function SearchSourceField({ field, text }: { field: string; text: string | null | undefined }) {
-  const hit = useContext(SessionSearchContext);
+  const matches = useContext(SessionSearchContext);
   const { t } = useTranslation();
-  return hit?.field === field && text && text.length === hit.length && text.slice(hit.windowStart, hit.windowStart + hit.text.length) === hit.text
+  return text && matches.some((hit) => hit.field === field && text.length === hit.length && text.slice(hit.windowStart, hit.windowStart + hit.text.length) === hit.text)
     ? <ToolTextBlock title={t(`sessions.detail.${field}`)} text={text} /> : null;
 }
 
@@ -751,7 +751,7 @@ function WebSearchItem({
   const { t } = useTranslation();
   const [isExpanded, setIsExpanded] = useSessionSearchExpansion();
   const contentBlocks = parseToolContentBlocks(output);
-  const hit = useContext(SessionSearchContext);
+  const matches = useContext(SessionSearchContext);
   const text = contentBlocks?.text ?? output;
   const results = text ? splitWebSearchResults(text) : [];
   const searchLabel = action === "open"
@@ -785,7 +785,7 @@ function WebSearchItem({
         </span>
       </button>
       {isExpanded ? <div className="ml-4 mt-2 space-y-2">
-        {hit?.field === "output" && text ? <ToolTextBlock title={t("sessions.detail.output")} text={cleanExecOutput(text)} /> : structuredResults ? (
+        {matches.some((hit) => hit.field === "output") && text ? <ToolTextBlock title={t("sessions.detail.output")} text={cleanExecOutput(text)} /> : structuredResults ? (
           <div className="space-y-2">
             {structuredResults.map((result, index) => (
               <article key={`${index}-${result.url ?? result.title}`} className="py-2">
@@ -793,7 +793,7 @@ function WebSearchItem({
                   <a href={result.url} target="_blank" rel="noreferrer" className="block break-words text-sm font-semibold text-primary hover:underline"><SessionSearchText text={result.title} /></a>
                 ) : <div className="break-words text-sm font-semibold text-foreground"><SessionSearchText text={result.title} /></div>}
                 {result.domain ? <div className="mt-1 text-xs text-muted-foreground">{result.domain}</div> : null}
-                {hit?.field === "search_result" && result.url ? <SessionSearchText text={result.url} /> : null}
+                {matches.some((hit) => hit.field === "search_result") && result.url ? <SessionSearchText text={result.url} /> : null}
                 {result.snippet ? <p className="mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground"><SessionSearchText text={result.snippet} /></p> : null}
               </article>
             ))}
@@ -1164,11 +1164,11 @@ function TimelineItem({ item, activity, tokenUsage, rawJsonlLines }: TimelineEnt
   return content;
 }
 
-export function ConversationItem({ block, rawJsonlLines, searchHit = null }: { block: ConversationBlock; rawJsonlLines: string[]; searchHit?: SessionSearchHit | null }) {
+export function ConversationItem({ block, rawJsonlLines, searchHits = [] }: { block: ConversationBlock; rawJsonlLines: string[]; searchHits?: SessionSearchHit[] }) {
   const { t } = useTranslation();
   const [userExpanded, setExpanded] = useState(false);
-  const expanded = userExpanded || searchHit !== null;
-  if (block.kind === "item") return <SessionSearchContext value={searchHit}><TimelineItem {...block.entry} rawJsonlLines={rawJsonlLines} /></SessionSearchContext>;
+  const expanded = userExpanded || searchHits.length > 0;
+  if (block.kind === "item") return <SessionSearchContext value={searchHits}><TimelineItem {...block.entry} rawJsonlLines={rawJsonlLines} /></SessionSearchContext>;
   // Merge adjacent reads only, retaining a badge for each original token event.
   const rows: { label: string; names: string[]; entries: TimelineEntry[] }[] = [];
   block.actions.forEach((actions, index) => {
@@ -1190,7 +1190,7 @@ export function ConversationItem({ block, rawJsonlLines, searchHit = null }: { b
         <span className="sr-only">{t(expanded ? "sessions.detail.collapse" : "sessions.detail.expand")}</span>
       </button>
       {expanded ? <div className="ml-2 mt-2 space-y-2 border-l border-border/60 pl-4">
-        {block.entries.map((entry, index) => <SessionSearchContext key={index} value={searchHit?.entryIndex === index ? searchHit : null}><TimelineItem {...entry} rawJsonlLines={rawJsonlLines} /></SessionSearchContext>)}
+        {block.entries.map((entry, index) => <SessionSearchContext key={index} value={searchHits.filter((hit) => hit.entryIndex === index)}><TimelineItem {...entry} rawJsonlLines={rawJsonlLines} /></SessionSearchContext>)}
       </div> : <div className="ml-2 mt-2 space-y-2 border-l border-border/60 pl-4">
         {rows.map((row, index) => <div key={index} className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
           <span className="min-w-0 break-words text-muted-foreground"><span className="mr-2 font-medium text-foreground">{row.label}</span>{row.names.join(", ")}</span>
@@ -1238,7 +1238,8 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
     function handleSearchKey(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f" && detail) {
         event.preventDefault();
-        setShowSearch(true);
+        if (showSearch) closeSearch();
+        else setShowSearch(true);
       } else if (event.key === "Escape" && showSearch) {
         event.preventDefault();
         event.stopPropagation();
@@ -1343,7 +1344,19 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
       && !text.startsWith("# AGENTS.md instructions for ")
       && !text.startsWith("<environment_context>");
   })?.text.trim().slice(0, 600) ?? "") ?? [], [detail]);
-  const searchHit = search?.active && search.source === detail && search.scope === activeTab ? search.hit : null;
+  const searchResult = showSearch && search?.active && search.source === detail && search.scope === activeTab ? search : null;
+  const searchHit = searchResult?.hit;
+  const searchMatches = useMemo(() => {
+    const turns = new Map<number, Map<number, SessionSearchHit[]>>();
+    for (const match of searchResult?.matches ?? []) {
+      let blocks = turns.get(match.turnIndex);
+      if (!blocks) turns.set(match.turnIndex, blocks = new Map());
+      const matches = blocks.get(match.blockIndex) ?? [];
+      matches.push(match);
+      blocks.set(match.blockIndex, matches);
+    }
+    return turns;
+  }, [searchResult?.matches]);
 
   useLayoutEffect(() => {
     if (!searchHit) return;
@@ -1353,7 +1366,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
     const scroll = scrollRef.current;
     const target = scroll?.querySelector<HTMLElement>('[data-testid="session-search-current"]');
     if (scroll && target) {
-      scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 16;
+      scroll.scrollTop += target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - 64;
     }
   }, [detail, searchHit]);
 
@@ -1390,8 +1403,10 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
   }
 
   function closeSearch() {
-    setShowSearch(false);
-    setSearch(null);
+    flushSync(() => {
+      setShowSearch(false);
+      setSearch(null);
+    });
     searchButtonRef.current?.focus({ preventScroll: true });
   }
 
@@ -1546,7 +1561,8 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
           </div>
         </header>
 
-        {detail && showSearch ? <SessionSearchToolbar key={activePath} ref={searchRef} detail={detail} scope={activeTab} onChange={setSearch} /> : null}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+        {detail && showSearch ? <SessionSearchToolbar key={activePath} ref={searchRef} detail={detail} scope={activeTab} onChange={setSearch} onClose={closeSearch} /> : null}
         <div
           ref={scrollRef}
           data-testid="session-detail-scroll"
@@ -1635,7 +1651,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
               <AgentHierarchy agents={detail.agents ?? []} activePath={detail.path} onSelect={setActivePath} />
               {detail.turns.map((turn, index) => {
                 const turnKey = `${turn.turnId}-${index}`;
-                const isExpanded = expandedTurns.has(turnKey) || searchHit?.turnIndex === index;
+                const isExpanded = expandedTurns.has(turnKey) || searchMatches.has(index);
                 const userPreview = turnPreviews[index];
                 return (
                 <section
@@ -1679,7 +1695,7 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                   {isExpanded ? (
                   <div className="mt-4 space-y-3">
                     {conversation[index].map((block, itemIndex) => (
-                      <ConversationItem key={itemIndex} block={block} rawJsonlLines={rawJsonlLines} searchHit={searchHit?.turnIndex === index && searchHit.blockIndex === itemIndex ? searchHit : null} />
+                      <ConversationItem key={itemIndex} block={block} rawJsonlLines={rawJsonlLines} searchHits={searchMatches.get(index)?.get(itemIndex)} />
                     ))}
                   </div>
                   ) : null}
@@ -1717,12 +1733,13 @@ export function SessionDetailModal({ session, onClose, onScanComplete }: Session
                 </div>
               </div>
               <pre className="min-h-[60vh] whitespace-pre-wrap break-words rounded-lg border border-border/60 bg-surface p-4 font-mono text-xs leading-relaxed text-foreground">
-                <SessionSearchContext value={searchHit}><SessionSearchText text={detail.rawJsonl} full={showFullRaw}>{showFullRaw ? detail.rawJsonl : rawPreview}</SessionSearchText></SessionSearchContext>
+                <SessionSearchContext value={searchResult?.matches ?? []}><SessionSearchText text={detail.rawJsonl} full={showFullRaw}>{showFullRaw ? detail.rawJsonl : rawPreview}</SessionSearchText></SessionSearchContext>
               </pre>
             </div>
           )}
           </div>
           <div aria-hidden="true" style={{ height: collapsedHeight }} />
+        </div>
         </div>
       </div>
     </div>

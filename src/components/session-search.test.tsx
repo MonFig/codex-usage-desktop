@@ -16,7 +16,7 @@ class SearchWorker {
   terminate = vi.fn();
   constructor() { SearchWorker.instances.push(this); }
   reply(requestId: number, index = 0) {
-    this.onmessage?.({ data: { requestId, count: 3, index, hit: null } } as MessageEvent<SessionSearchResponse>);
+    this.onmessage?.(new MessageEvent<SessionSearchResponse>("message", { data: { requestId, count: 3, index, hit: null, matches: [] } }));
   }
   latestRequest() {
     return this.postMessage.mock.calls.map(([request]) => request).findLast((request) => request.type === "search" || request.type === "select")!;
@@ -45,7 +45,7 @@ afterEach(() => {
 
 it("rejects late results after changing or clearing the query and releases the worker", async () => {
   const onChange = vi.fn();
-  render(<SessionSearchToolbar detail={detail} scope="timeline" onChange={onChange} ref={createRef<SessionSearchHandle>()} />);
+  render(<SessionSearchToolbar detail={detail} scope="timeline" onChange={onChange} onClose={vi.fn()} ref={createRef<SessionSearchHandle>()} />);
   expect(SearchWorker.instances).toHaveLength(0);
   const input = screen.getByRole("searchbox");
   fireEvent.change(input, { target: { value: "old" } });
@@ -69,9 +69,8 @@ it("rejects late results after changing or clearing the query and releases the w
 
 it("keeps rapid keyboard navigation ordered and reports worker failures", async () => {
   const onChange = vi.fn();
-  render(<SessionSearchToolbar detail={detail} scope="timeline" onChange={onChange} ref={createRef<SessionSearchHandle>()} />);
+  render(<SessionSearchToolbar detail={detail} scope="timeline" onChange={onChange} onClose={vi.fn()} ref={createRef<SessionSearchHandle>()} />);
   const input = screen.getByRole("searchbox");
-  fireEvent.keyDown(window, { key: "f", ctrlKey: true });
   expect(input).toHaveFocus();
   fireEvent.change(input, { target: { value: "needle" } });
   await act(() => vi.advanceTimersByTimeAsync(150));
@@ -103,7 +102,7 @@ it("highlights the original field, allows full text expansion, and restores its 
   }];
   const index = new SessionSearchIndex(buildSearchDocuments(turns), "");
   const hit = (await index.search("needle", "timeline", async () => {}))!.hit;
-  const view = (active: typeof hit, full = false) => <SessionSearchContext value={active}><SessionSearchText text={text} full={full}><p>Normal preview</p></SessionSearchText></SessionSearchContext>;
+  const view = (active: typeof hit, full = false) => <SessionSearchContext value={active ? [active] : []}><SessionSearchText text={text} full={full}><p>Normal preview</p></SessionSearchText></SessionSearchContext>;
   const { rerender } = render(view(hit));
   expect(screen.getByTestId("session-search-current")).toHaveTextContent("Needle");
   expect(screen.getByTestId("session-search-window").textContent!.length).toBeLessThan(8500);
@@ -115,4 +114,25 @@ it("highlights the original field, allows full text expansion, and restores its 
   rerender(view(null));
   expect(screen.getByText("Normal preview")).toBeInTheDocument();
   expect(screen.queryByTestId("session-search-current")).not.toBeInTheDocument();
+});
+
+it("shows every distant occurrence together and moves the current highlight without hiding other matches", async () => {
+  const text = `İ😀 [a.*] ${"x".repeat(40_000)} [A.*] ${"y".repeat(40_000)} [a.*]`;
+  const index = new SessionSearchIndex([], text);
+  await index.search("[a.*]", "raw", async () => {});
+  const view = (selected: number) => <SessionSearchContext value={index.select(selected).matches}><SessionSearchText text={text} /></SessionSearchContext>;
+  const { rerender } = render(view(1));
+  expect(screen.getByTestId("session-search-current")).toHaveTextContent("[A.*]");
+  expect(screen.getAllByTestId("session-search-match").map((mark) => mark.textContent)).toEqual(["[a.*]", "[a.*]"]);
+  expect(screen.getByTestId("session-search-window").textContent!.length).toBeLessThan(25_000);
+  rerender(view(2));
+  expect(screen.getByTestId("session-search-current")).toHaveTextContent("[a.*]");
+  expect(screen.getAllByTestId("session-search-match").map((mark) => mark.textContent)).toEqual(["[a.*]", "[A.*]"]);
+});
+
+it("offers a close button even when the query is empty", () => {
+  const onClose = vi.fn();
+  render(<SessionSearchToolbar detail={detail} scope="timeline" onChange={vi.fn()} onClose={onClose} ref={createRef<SessionSearchHandle>()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Close search" }));
+  expect(onClose).toHaveBeenCalledOnce();
 });

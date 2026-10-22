@@ -538,6 +538,7 @@
       "search_error": "搜尋暫時無法使用",
       "search_previous": "上一個相符結果（Shift+Enter）",
       "search_next": "下一個相符結果（Enter）",
+      "search_close": "關閉搜尋",
       "search_clear": "清空搜尋",
       "refresh": "重新整理此工作階段",
       "refresh_error": "重新整理失敗",

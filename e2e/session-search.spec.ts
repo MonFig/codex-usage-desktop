@@ -65,8 +65,11 @@ describe("session data search", () => {
       await expect(searchButton).toHaveAttribute("aria-expanded", "false");
       expect(await searchButton.execute((element) => element.nextElementSibling?.textContent)).toContain("Details");
       await browser.saveScreenshot("/tmp/codex-usage-session-search-closed.png");
+      const scrollTop = await dialog.$('[data-testid="session-detail-scroll"]').getLocation("y");
       await searchButton.click();
       await input.waitForDisplayed();
+      expect(await dialog.$('[data-testid="session-detail-scroll"]').getLocation("y")).toBe(scrollTop);
+      expect(await dialog.$('[role="search"]').getCSSProperty("position")).toMatchObject({ value: "absolute" });
       await expect(searchButton).toHaveAttribute("aria-expanded", "true");
       await expect(input).toBeFocused();
       await searchButton.click();
@@ -74,6 +77,18 @@ describe("session data search", () => {
       await browser.keys([process.platform === "darwin" ? "Meta" : "Control", "f"]);
       input = dialog.$('input[type="search"]');
       await input.waitForDisplayed();
+      await expect(input).toBeFocused();
+      await browser.keys(["Control", "f"]);
+      await expect(dialog.$('input[type="search"]')).not.toExist();
+      await expect(searchButton).toBeFocused();
+      await browser.keys(["Control", "f"]);
+      input = dialog.$('input[type="search"]');
+      await expect(input).toBeFocused();
+      await dialog.$('button[aria-label="Close search"]').click();
+      await expect(dialog.$('input[type="search"]')).not.toExist();
+      await expect(searchButton).toBeFocused();
+      await browser.keys([process.platform === "darwin" ? "Meta" : "Control", "f"]);
+      input = dialog.$('input[type="search"]');
       await expect(input).toBeFocused();
       const explored = dialog.$('section[aria-label="Explored"]');
       await expect(explored.$("button")).toHaveAttribute("aria-expanded", "false");
@@ -84,15 +99,17 @@ describe("session data search", () => {
 
       await input.setValue(needle.toLowerCase());
       const status = dialog.$('[role="search"] [role="status"]');
-      const mark = dialog.$('[data-testid="session-search-current"]');
-      const window = dialog.$('[data-testid="session-search-window"]');
+      const currentMark = () => dialog.$('[data-testid="session-search-current"]');
+      const currentWindow = () => dialog.$('[data-session-search-hit]:has([data-testid="session-search-current"]) [data-testid="session-search-window"]');
       await expect(status).toHaveText("1 / 3");
-      await expect(mark).toHaveText(needle);
+      await expect(currentMark()).toHaveText(needle);
       await expect(firstTurn).toHaveAttribute("aria-expanded", "true");
       await expect(secondTurn).toHaveAttribute("aria-expanded", "true");
-      await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(1);
-      expect(await window.getText()).toContain("first occurrence");
-      expect((await window.getText()).length).toBeLessThan(8500);
+      await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(2);
+      await expect(dialog.$$("mark")).toBeElementsArrayOfSize(3);
+      expect(await currentWindow().getText()).toContain("first occurrence");
+      expect(await currentWindow().getText()).toContain("second occurrence");
+      expect((await currentWindow().getText()).length).toBeLessThan(25_000);
       await expect(explored.$("button")).toHaveAttribute("aria-expanded", "true");
       expect(await dialog.getText()).toContain("Search prompt 1");
       expect(await dialog.getText()).toContain("Search prompt 2");
@@ -100,22 +117,29 @@ describe("session data search", () => {
 
       await dialog.$('button[aria-label="Next match (Enter)"]').click();
       await expect(status).toHaveText("2 / 3");
-      expect(await window.getText()).toContain("second occurrence");
+      expect(await currentWindow().getText()).toContain("second occurrence");
       await input.click();
       await browser.keys("Enter");
       await expect(status).toHaveText("3 / 3");
       await expect(firstTurn).toHaveAttribute("aria-expanded", "true");
       await expect(secondTurn).toHaveAttribute("aria-expanded", "true");
-      expect(await window.getText()).toContain("nested occurrence");
+      expect(await currentWindow().getText()).toContain("nested occurrence");
       await expect(dialog.$('nav[aria-label="Quick navigation"] [aria-current="location"]')).toHaveText("Search prompt 2");
-      expect((await window.getText()).length).toBeLessThan(8500);
+      expect((await currentWindow().getText()).length).toBeLessThan(25_000);
       expect(await dialog.getText()).toContain("unrelated sibling output");
-      await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(1);
-      await browser.waitUntil(async () => mark.execute((element) => {
+      await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(2);
+      await expect(dialog.$$("mark")).toBeElementsArrayOfSize(3);
+      await browser.waitUntil(async () => currentMark().execute((element) => {
         const bounds = element.getBoundingClientRect();
         const viewport = element.closest('[role="dialog"]')!.getBoundingClientRect();
         return bounds.top >= viewport.top && bounds.bottom <= viewport.bottom;
       }), { timeoutMsg: "Deep match should be visible inside its text window" });
+      expect(await dialog.$('[role="search"]').execute((element) => {
+        const bar = element.getBoundingClientRect();
+        const scroll = document.querySelector('[data-testid="session-detail-scroll"]')!.getBoundingClientRect();
+        const current = document.querySelector('[data-testid="session-search-current"]')!.getBoundingClientRect();
+        return bar.top >= scroll.top && bar.bottom <= current.top && bar.bottom < scroll.top + 80;
+      })).toBe(true);
       await browser.saveScreenshot("/tmp/codex-usage-session-search-hit.png");
 
       // A new query invalidates both debounced work and already-running worker responses.
@@ -133,7 +157,8 @@ describe("session data search", () => {
       await expect(dialog.$('button=Copy')).toExist();
       await expect(status).toHaveText("1 / 3");
       await expect(dialog.$$('[data-session-search-hit]')).toBeElementsArrayOfSize(1);
-      expect((await window.getText()).length).toBeLessThan(8500);
+      expect((await currentWindow().getText()).length).toBeLessThan(25_000);
+      await expect(dialog.$$("mark")).toBeElementsArrayOfSize(3);
       await dialog.$('button[aria-label="Previous match (Shift+Enter)"]').click();
       await expect(status).toHaveText("3 / 3");
       await dialog.$('button=Timeline').click();

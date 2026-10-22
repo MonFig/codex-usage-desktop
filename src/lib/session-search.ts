@@ -22,8 +22,10 @@ export type SessionSearchHit = Omit<SearchDocument, "text"> & {
   highlightStart: number;
   highlightEnd: number;
   length: number;
+  offsets: number[];
+  current: boolean;
 };
-export type SessionSearchResult = { count: number; index: number; hit: SessionSearchHit | null };
+export type SessionSearchResult = { count: number; index: number; hit: SessionSearchHit | null; matches: SessionSearchHit[] };
 export type SessionSearchRequest =
   | { type: "init"; turns: SessionReplayDetail["turns"]; rawJsonl: string }
   | { type: "cancel" }
@@ -184,7 +186,7 @@ export class SessionSearchIndex {
   }
 
   select(index: number): SessionSearchResult {
-    if (!this.count) return { count: 0, index: 0, hit: null };
+    if (!this.count) return { count: 0, index: 0, hit: null, matches: [] };
     index = ((index % this.count) + this.count) % this.count;
     let low = 0;
     let high = this.groups.length - 1;
@@ -194,17 +196,18 @@ export class SessionSearchIndex {
       else high = middle - 1;
     }
     const group = this.groups[low];
-    const offset = group.offsets[index - group.first];
-    const { text, ...position } = group.document;
-    const windowStart = Math.max(0, offset - CONTEXT_LENGTH);
-    const end = Math.min(text.length, offset + this.queryLength + CONTEXT_LENGTH);
-    return {
-      count: this.count, index,
-      hit: {
+    const matches = this.groups.map((matchGroup) => {
+      const current = matchGroup === group;
+      const offset = matchGroup.offsets[current ? index - matchGroup.first : 0];
+      const { text, ...position } = matchGroup.document;
+      const windowStart = Math.max(0, offset - CONTEXT_LENGTH);
+      const end = Math.min(text.length, offset + this.queryLength + CONTEXT_LENGTH);
+      return {
         ...position, offset, windowStart, text: text.slice(windowStart, end),
         highlightStart: offset - windowStart, highlightEnd: offset - windowStart + this.queryLength,
-        length: text.length,
-      },
-    };
+        length: text.length, offsets: matchGroup.offsets, current,
+      };
+    });
+    return { count: this.count, index, hit: matches[low], matches };
   }
 }

@@ -19,11 +19,13 @@ describe("session data search", () => {
     }])]);
     const index = new SessionSearchIndex(documents, "");
     expect(await index.search("needle", "timeline", yieldTask)).toMatchObject({ count: 3, index: 0, hit: { turnIndex: 0, blockIndex: 0, offset: 0 } });
-    expect(index.select(1)).toMatchObject({ hit: { turnIndex: 0, offset: 11 } });
+    expect(index.select(1)).toMatchObject({ hit: { turnIndex: 0, offset: 11 }, matches: [
+      { offsets: [0, 11], current: true }, { turnIndex: 1, offsets: [7], current: false },
+    ] });
     expect(index.select(2)).toMatchObject({ hit: { turnIndex: 1, blockIndex: 0, entryIndex: 0, field: "output", offset: 7, text: "hidden NEEDLE output" } });
     expect(index.select(3).index).toBe(0);
     expect(index.select(-1).index).toBe(2);
-    expect(await index.search("absent", "timeline", yieldTask)).toEqual({ count: 0, index: 0, hit: null });
+    expect(await index.search("absent", "timeline", yieldTask)).toEqual({ count: 0, index: 0, hit: null, matches: [] });
   });
 
   it("searches literal punctuation and keeps original Unicode offsets", async () => {
@@ -32,7 +34,7 @@ describe("session data search", () => {
     expect(result).toMatchObject({ count: 2, hit: { offset: 4, highlightStart: 4, highlightEnd: 9 } });
     expect(index.select(1).hit?.offset).toBe(13);
     expect(await index.search("中文", "timeline", yieldTask)).toMatchObject({ hit: { offset: 10, highlightStart: 10, highlightEnd: 12 } });
-    expect(await index.search("", "timeline", yieldTask)).toEqual({ count: 0, index: 0, hit: null });
+    expect(await index.search("", "timeline", yieldTask)).toEqual({ count: 0, index: 0, hit: null, matches: [] });
   });
 
   it("returns bounded windows for deep hits in multi-megabyte lines and raw JSONL", async () => {

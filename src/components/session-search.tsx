@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
-import { ChevronDown, ChevronUp, Loader2, Search, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Eraser, Loader2, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SessionReplayDetail } from "@/lib/api";
 import type { SearchScope, SessionSearchHit, SessionSearchRequest, SessionSearchResponse, SessionSearchResult } from "@/lib/session-search";
@@ -12,12 +12,13 @@ export type SessionSearchState = SessionSearchResult & {
   error: boolean;
 };
 export type SessionSearchHandle = { clear: () => void };
-const EMPTY_RESULT: SessionSearchResult = { count: 0, index: 0, hit: null };
+const EMPTY_RESULT: SessionSearchResult = { count: 0, index: 0, hit: null, matches: [] };
 
-export function SessionSearchToolbar({ detail, scope, onChange, ref }: {
+export function SessionSearchToolbar({ detail, scope, onChange, onClose, ref }: {
   detail: SessionReplayDetail;
   scope: SearchScope;
   onChange: (state: SessionSearchState) => void;
+  onClose: () => void;
   ref: Ref<SessionSearchHandle>;
 }) {
   const { t } = useTranslation();
@@ -95,15 +96,6 @@ export function SessionSearchToolbar({ detail, scope, onChange, ref }: {
 
   useEffect(() => {
     inputRef.current?.focus();
-    function focusSearch(event: KeyboardEvent) {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        inputRef.current?.focus();
-        inputRef.current?.select();
-      }
-    }
-    window.addEventListener("keydown", focusSearch);
-    return () => window.removeEventListener("keydown", focusSearch);
   }, []);
 
   function navigate(delta: number) {
@@ -113,7 +105,7 @@ export function SessionSearchToolbar({ detail, scope, onChange, ref }: {
   }
 
   return (
-    <div id="session-detail-search" role="search" className="flex shrink-0 items-center gap-2 border-b border-border/60 bg-surface px-4 py-1.5">
+    <div id="session-detail-search" role="search" className="absolute inset-x-3 top-2 z-20 ml-auto flex max-w-xl items-center gap-2 rounded-lg border border-border/60 bg-surface px-3 py-2 shadow-lg">
       <Search aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <input
         ref={inputRef}
@@ -146,39 +138,61 @@ export function SessionSearchToolbar({ detail, scope, onChange, ref }: {
         </button>
       ))}
       <button type="button" disabled={!query} className="rounded p-1 text-muted-foreground hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-40" aria-label={t("sessions.detail.search_clear")} onClick={clear}>
+        <Eraser className="h-4 w-4" />
+      </button>
+      <button type="button" className="rounded border-l border-border pl-2 text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring" aria-label={t("sessions.detail.search_close")} onClick={onClose}>
         <X className="h-4 w-4" />
       </button>
     </div>
   );
 }
 
-export const SessionSearchContext = createContext<SessionSearchHit | null>(null);
+export const SessionSearchContext = createContext<SessionSearchHit[]>([]);
 
-// Search temporarily opens the current match without changing the user's disclosure state.
+// Search temporarily opens matching content without changing the user's disclosure state.
 export function useSessionSearchExpansion(initial = false) {
-  const hit = useContext(SessionSearchContext);
+  const matches = useContext(SessionSearchContext);
   const [expanded, setExpanded] = useState(initial);
-  return [expanded || hit !== null, setExpanded] as const;
+  return [expanded || matches.length > 0, setExpanded] as const;
 }
 
 export function SessionSearchTarget({ target, children }: { target: string; children: ReactNode }) {
-  const hit = useContext(SessionSearchContext);
-  return <SessionSearchContext value={hit?.target === target ? hit : null}>{children}</SessionSearchContext>;
+  const matches = useContext(SessionSearchContext);
+  return <SessionSearchContext value={matches.filter((hit) => hit.target === target)}>{children}</SessionSearchContext>;
 }
 
 export function SessionSearchText({ text, field, full = false, children }: { text: string; field?: string; full?: boolean; children?: ReactNode }) {
-  const hit = useContext(SessionSearchContext);
+  const matches = useContext(SessionSearchContext);
+  const hit = matches.find((match) => (!field || match.field === field) && text.length === match.length && text.slice(match.windowStart, match.windowStart + match.text.length) === match.text);
   const { t } = useTranslation();
   const [showFull, setShowFull] = useState(false);
-  if (!hit || (field && hit.field !== field) || text.length !== hit.length || text.slice(hit.windowStart, hit.windowStart + hit.text.length) !== hit.text) {
+  if (!hit) {
     return <>{children ?? text}</>;
   }
   const bounded = text.length > 32_000 && !full && !showFull;
-  const content = bounded ? hit.text : text;
-  const start = bounded ? hit.highlightStart : hit.offset;
-  const end = start + hit.highlightEnd - hit.highlightStart;
+  const length = hit.highlightEnd - hit.highlightStart;
+  // Merge nearby match windows so every occurrence is visible without rendering megabytes of unrelated output.
+  const windows: { start: number; end: number; offsets: number[] }[] = [];
+  for (const offset of hit.offsets) {
+    const start = bounded ? Math.max(0, offset - 4000) : 0;
+    const end = bounded ? Math.min(text.length, offset + length + 4000) : text.length;
+    const previous = windows.at(-1);
+    if (previous && start <= previous.end) {
+      previous.end = Math.max(previous.end, end);
+      previous.offsets.push(offset);
+    } else windows.push({ start, end, offsets: [offset] });
+  }
   return <span className="whitespace-pre-wrap break-words" data-session-search-hit>
-    <span data-testid="session-search-window">{bounded && hit.windowStart > 0 ? "…\n" : ""}{content.slice(0, start)}<mark className="rounded bg-yellow-300 text-black" data-testid="session-search-current">{content.slice(start, end)}</mark>{content.slice(end)}{bounded && hit.windowStart + content.length < text.length ? "\n…" : ""}</span>
+    <span data-testid="session-search-window">{windows.map((window) => {
+      const content: ReactNode[] = [];
+      let cursor = window.start;
+      for (const offset of window.offsets) {
+        const current = hit.current && offset === hit.offset;
+        content.push(text.slice(cursor, offset), <mark key={offset} className={`rounded text-black ${current ? "bg-orange-300 ring-1 ring-orange-600" : "bg-yellow-300"}`} data-testid={current ? "session-search-current" : "session-search-match"}>{text.slice(offset, offset + length)}</mark>);
+        cursor = offset + length;
+      }
+      return <span key={window.start}>{window.start > 0 ? "…\n" : ""}{content}{text.slice(cursor, window.end)}{window.end < text.length ? "\n…" : ""}</span>;
+    })}</span>
     {bounded ? <button type="button" className="mt-2 block text-xs text-primary hover:underline" onClick={() => setShowFull(true)}>{t("sessions.detail.show_full_text")}</button> : null}
   </span>;
 }

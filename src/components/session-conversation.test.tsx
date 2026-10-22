@@ -33,19 +33,19 @@ it("finds hidden output inside the original exploration group and restores its d
   const group = screen.getByRole("region", { name: "Explored" });
   const disclosure = within(group).getByRole("button", { name: /Explored/ });
   expect(disclosure).toHaveAttribute("aria-expanded", "false");
-  rerender(<ConversationItem block={block} rawJsonlLines={[]} searchHit={hit} />);
+  rerender(<ConversationItem block={block} rawJsonlLines={[]} searchHits={hit ? [hit] : []} />);
   expect(disclosure).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByTestId("session-search-current")).toHaveTextContent("Needle");
   const command = within(group).getByRole("button", { name: /Ran cat first.txt/ });
   expect(command.parentElement?.querySelector("pre")?.textContent).toBe("└ before Needle after");
   expect(group).toHaveTextContent("cat second.txt");
   expect(group).toHaveTextContent("unrelated sibling output");
-  rerender(<ConversationItem block={block} rawJsonlLines={[]} searchHit={null} />);
+  rerender(<ConversationItem block={block} rawJsonlLines={[]} searchHits={[]} />);
   expect(disclosure).toHaveAttribute("aria-expanded", "false");
   expect(screen.queryByTestId("session-search-current")).not.toBeInTheDocument();
 });
 
-it("highlights only the selected nested command when outputs are identical", async () => {
+it("highlights all identical nested outputs while moving only the current match", async () => {
   await i18n.changeLanguage("en");
   const turn: SessionReplayDetail["turns"][number] = {
     turnId: "nested-find", startedAt: null, completedAt: null, durationMs: null, systemMessages: [], userMessages: [], assistantMessages: [],
@@ -61,13 +61,15 @@ it("highlights only the selected nested command when outputs are identical", asy
   const index = new SessionSearchIndex(buildSearchDocuments([turn]), "");
   expect(await index.search("Needle", "timeline", async () => {})).toMatchObject({ count: 2 });
   const block = buildConversation(turn)[0];
-  const { rerender } = render(<ConversationItem block={block} rawJsonlLines={[]} searchHit={index.select(0).hit} />);
+  const { rerender } = render(<ConversationItem block={block} rawJsonlLines={[]} searchHits={index.select(0).matches} />);
   const first = screen.getByRole("button", { name: /Ran echo first/ });
   const second = screen.getByRole("button", { name: /Ran echo second/ });
   expect(within(first.parentElement!).getByTestId("session-search-current")).toHaveTextContent("Needle");
-  expect(second).toHaveAttribute("aria-expanded", "false");
-  rerender(<ConversationItem block={block} rawJsonlLines={[]} searchHit={index.select(1).hit} />);
-  expect(first).toHaveAttribute("aria-expanded", "false");
+  expect(second).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getAllByTestId("session-search-match")).toHaveLength(1);
+  rerender(<ConversationItem block={block} rawJsonlLines={[]} searchHits={index.select(1).matches} />);
+  expect(first).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getAllByTestId("session-search-match")).toHaveLength(1);
   expect(second).toHaveAttribute("aria-expanded", "true");
   expect(screen.getAllByTestId("session-search-current")).toHaveLength(1);
   expect(within(second.parentElement!).getByTestId("session-search-current")).toHaveTextContent("Needle");
@@ -95,7 +97,7 @@ it.each([
     const result = (await index.search(document.text, "timeline", async () => {}))!;
     for (let selected = 0; selected < result.count; selected += 1) {
       const hit = index.select(selected).hit!;
-      rerender(<ConversationItem block={blocks[hit.blockIndex]} rawJsonlLines={[]} searchHit={hit} />);
+      rerender(<ConversationItem block={blocks[hit.blockIndex]} rawJsonlLines={[]} searchHits={index.select(selected).matches.filter((match) => match.blockIndex === hit.blockIndex)} />);
       const marks = screen.queryAllByTestId("session-search-current");
       expect(marks, `${name}: ${hit.field} ${document.text}`).toHaveLength(1);
       expect(marks[0].textContent).toBe(document.text);
