@@ -1,11 +1,11 @@
 use crate::{
     date::{
-        date_key_in_timezone, list_date_keys, list_hour_keys_until, resolve_app_timezone,
+        date_key_in_timezone, list_date_keys, list_hour_buckets_until, resolve_app_timezone,
         shift_date_key,
     },
     db::{
-        query_all_session_file_rollups, query_daily_quota_percents, query_daily_rows,
-        query_latest_update_at, query_model_quota_samples, ModelQuotaAggregate,
+        hourly_rollups_ready, query_all_session_file_rollups, query_daily_quota_percents,
+        query_daily_rows, query_latest_update_at, query_model_quota_samples, ModelQuotaAggregate,
     },
     pricing::{calculate_cost_usd, PricingSource},
     types::{
@@ -94,14 +94,15 @@ pub fn get_overview(
             }
         })
         .collect::<Vec<_>>();
-    let hourly = if matches!(range, "1d" | "2d") {
-        let start_hour = format!("{start_date}T00:00");
-        let end_hour = format!("{end_date}T23:00");
+    let hourly = if matches!(range, "1d" | "2d") && hourly_rollups_ready(db, &timezone)? {
+        let buckets = list_hour_buckets_until(&start_date, &timezone, Utc::now())?;
+        let start_hour = buckets.first().map(|bucket| bucket.key.as_str()).unwrap_or_default();
+        let end_hour = buckets.last().map(|bucket| bucket.key.as_str()).unwrap_or_default();
         let mut rows_by_hour = BTreeMap::<String, OverviewDailyRow>::new();
         for row in query_all_session_file_rollups(db)?
             .into_iter()
             .flat_map(|rollup| rollup.hourly_rows)
-            .filter(|row| row.hour >= start_hour && row.hour <= end_hour)
+            .filter(|row| row.hour.as_str() >= start_hour && row.hour.as_str() <= end_hour)
         {
             let summary =
                 rows_by_hour
@@ -128,11 +129,13 @@ pub fn get_overview(
                 })
                 .sum::<f64>();
         }
-        list_hour_keys_until(&start_date, &timezone, Utc::now())?
-            .into_iter()
-            .map(|hour| {
-                rows_by_hour.remove(&hour).unwrap_or(OverviewDailyRow {
-                    date: hour,
+        buckets.into_iter()
+            .map(|bucket| {
+                rows_by_hour.remove(&bucket.key).map(|mut row| {
+                    row.date = bucket.label.clone();
+                    row
+                }).unwrap_or(OverviewDailyRow {
+                    date: bucket.label,
                     input_tokens: 0,
                     cached_input_tokens: 0,
                     output_tokens: 0,
@@ -652,7 +655,7 @@ mod tests {
         let mut db = open_database(&path).unwrap();
         let now = Utc::now();
         let date = date_key_in_timezone(now, "UTC");
-        let hour = format!("{date}T{:02}:00", now.hour());
+        let hour = crate::date::local_hour_key(now, "UTC");
         let usage = ModelUsage {
             input_tokens: 1_000,
             cached_input_tokens: 200,
@@ -679,6 +682,7 @@ mod tests {
                     total_tokens: usage.total_tokens,
                     models: BTreeMap::from([("gpt-5".to_string(), usage)]),
                 }],
+                timezone: "UTC".to_string(),
                 prompt_title: None,
                 turn_count: 0,
                 quota_usage: None,
@@ -698,10 +702,10 @@ mod tests {
         assert_eq!(response.hourly.len(), now.hour() as usize + 1);
         assert_eq!(
             response.hourly.first().unwrap().date,
-            format!("{date}T00:00")
+            format!("{date}T00:00+00:00")
         );
         let current = response.hourly.last().unwrap();
-        assert_eq!(current.date, hour);
+        assert_eq!(current.date, format!("{date}T{:02}:00+00:00", now.hour()));
         assert_eq!(current.total_tokens, 1_300);
         assert!(current.cost_usd < 1.0);
         assert_eq!(response.daily.len(), 1);
@@ -717,9 +721,27 @@ mod tests {
         assert_eq!(two_day_response.hourly.len(), now.hour() as usize + 25);
         assert_eq!(
             two_day_response.hourly.first().unwrap().date,
-            format!("{}T00:00", shift_date_key(&date, -1).unwrap())
+            format!("{}T00:00+00:00", shift_date_key(&date, -1).unwrap())
         );
-        assert_eq!(two_day_response.hourly.last().unwrap().date, hour);
+        assert_eq!(
+            two_day_response.hourly.last().unwrap().date,
+            format!("{date}T{:02}:00+00:00", now.hour())
+        );
+
+        db.execute(
+            "UPDATE session_file_rollups SET quota_parser_version = quota_parser_version - 1",
+            [],
+        )
+        .unwrap();
+        let stale_response = get_overview(
+            &db,
+            "1d",
+            Some("UTC".to_string()),
+            &PricingSource::embedded(),
+        )
+        .unwrap();
+        assert!(stale_response.hourly.is_empty());
+        assert_eq!(stale_response.totals.total_tokens, 1_300);
         let _ = std::fs::remove_file(path);
     }
 

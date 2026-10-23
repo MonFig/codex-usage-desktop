@@ -8,7 +8,7 @@ import { formatTrendDateLabel } from "@/lib/usage-dashboard";
 
 describe("UsageTrendTooltip", () => {
   it("formats hourly trend labels with the date and hour", () => {
-    expect(formatTrendDateLabel("2026-10-23T17:00", true)).toBe("10-23 17:00");
+    expect(formatTrendDateLabel("2026-10-23T17:00+08:00", true)).toBe("10-23 17:00+08:00");
     expect(formatTrendDateLabel("2026-10-23", false)).toBe("10-23");
   });
 

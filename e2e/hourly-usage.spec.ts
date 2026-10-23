@@ -6,7 +6,7 @@ import type { OverviewResponse } from "../src/lib/api";
 describe("short-range hourly usage", () => {
   const run = process.env.CODEX_USAGE_REFRESH_E2E === "1" ? it : it.skip;
 
-  run("switches the one-day trend from daily to hourly buckets", async () => {
+  run("switches the one-day and two-day trends from daily to hourly buckets", async () => {
     await browser.waitUntil(
       () => browser.execute(() => Boolean(document.querySelector('[data-testid="dashboard-nav-tab"]'))),
       { timeout: 90_000, timeoutMsg: "App navigation did not mount" },
@@ -92,10 +92,35 @@ describe("short-range hourly usage", () => {
     });
     expect(overview.hourly?.length).toBeGreaterThan(1);
     await expect(chart).toHaveAttribute("data-chart-points", String(overview.hourly!.length));
-    expect(overview.hourly!.at(-1)?.date).toMatch(/T\d{2}:00$/);
+    expect(overview.hourly!.at(-1)?.date).toMatch(/T\d{2}:00[+-]\d{2}:\d{2}$/);
     expect(overview.hourly!.reduce((total, row) => total + row.totalTokens, 0)).toBe(
       overview.totals.totalTokens,
     );
     await browser.saveScreenshot("/tmp/codex-usage-hourly-trend.png");
+
+    await range.execute((element) => {
+      element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+      element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+      element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+    });
+    const twoDays = $('[data-testid="range-option-2d"]');
+    await twoDays.waitForExist();
+    await twoDays.click();
+
+    const twoDayOverview = await browser.execute(async () => {
+      const runtime = (window as unknown as {
+        __TAURI_INTERNALS__: {
+          invoke: <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+        };
+      }).__TAURI_INTERNALS__;
+      return runtime.invoke<OverviewResponse>("fetch_overview", { range: "2d" });
+    });
+    await expect(chart).toHaveAttribute("data-chart-granularity", "hour");
+    await expect(chart).toHaveAttribute("data-chart-points", String(twoDayOverview.hourly!.length));
+    expect(twoDayOverview.hourly!.length).toBeGreaterThan(overview.hourly!.length);
+    expect(twoDayOverview.hourly!.reduce((total, row) => total + row.totalTokens, 0)).toBe(
+      twoDayOverview.totals.totalTokens,
+    );
   }).timeout(180_000);
 });
