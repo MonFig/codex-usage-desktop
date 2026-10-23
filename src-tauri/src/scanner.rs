@@ -1,6 +1,6 @@
 use crate::{
     codex_environment::selected_codex_environment,
-    date::{date_key_in_timezone, resolve_app_timezone},
+    date::{date_key_in_timezone, hour_key_in_timezone, resolve_app_timezone},
     db::{
         delete_missing_daily_rows, delete_missing_session_file_rollups, query_session_file_rollup,
         record_scan_run, upsert_daily_rows, upsert_session_file_rollups, ModelQuotaSample,
@@ -9,7 +9,8 @@ use crate::{
     pricing::{calculate_cost_usd, PricingSource},
     session_file::{is_session_file, open_session_file, read_session_file},
     types::{
-        DailyUsageRow, ModelUsage, ProjectUsage, ScanMetrics, ScanResponse, SessionQuotaWindowUsage,
+        DailyUsageRow, HourlyUsageRow, ModelUsage, ProjectUsage, ScanMetrics, ScanResponse,
+        SessionQuotaWindowUsage,
     },
 };
 use chrono::{DateTime, Utc};
@@ -325,6 +326,7 @@ fn parse_rollup(
         modified_at_ms: file.modified_at_ms,
         size_bytes: file.size_bytes,
         rows: build_daily_rows(&events, timezone, updated_at, pricing),
+        hourly_rows: build_hourly_rows(&events, timezone),
         prompt_title: Some(title),
         turn_count,
         quota_usage: Some(quota),
@@ -457,6 +459,7 @@ fn load_daily_rows(
             modified_at_ms: file.modified_at_ms,
             size_bytes: file.size_bytes,
             rows: rows.clone(),
+            hourly_rows: build_hourly_rows(&events, timezone),
             prompt_title: Some(prompt_title),
             turn_count,
             quota_usage: Some(quota_usage),
@@ -1107,6 +1110,38 @@ fn build_daily_rows(
     let mut rows = build_daily_rows_without_cost(events, timezone, updated_at);
     apply_daily_costs(&mut rows, pricing_source);
     rows
+}
+
+fn build_hourly_rows(events: &[UsageEvent], timezone: &str) -> Vec<HourlyUsageRow> {
+    let mut summaries = BTreeMap::<String, HourlyUsageRow>::new();
+
+    for event in events {
+        let hour = hour_key_in_timezone(event.timestamp, timezone);
+        let summary = summaries
+            .entry(hour.clone())
+            .or_insert_with(|| HourlyUsageRow {
+                hour,
+                input_tokens: 0,
+                cached_input_tokens: 0,
+                output_tokens: 0,
+                reasoning_output_tokens: 0,
+                total_tokens: 0,
+                models: BTreeMap::new(),
+            });
+        summary.input_tokens += event.usage.input_tokens;
+        summary.cached_input_tokens += event.usage.cached_input_tokens;
+        summary.output_tokens += event.usage.output_tokens;
+        summary.reasoning_output_tokens += event.usage.reasoning_output_tokens;
+        summary.total_tokens += event.usage.total_tokens;
+
+        let model_usage = summary.models.entry(event.model.clone()).or_default();
+        add_usage(model_usage, &event.usage);
+        if event.is_fallback_model {
+            model_usage.is_fallback = Some(true);
+        }
+    }
+
+    summaries.into_values().collect()
 }
 
 fn build_daily_rows_without_cost(
@@ -1970,6 +2005,7 @@ mod tests {
                     modified_at_ms: modified_at_ms(&failed_metadata),
                     size_bytes: failed_metadata.len() as i64,
                     rows: vec![cached_row],
+                    hourly_rows: vec![],
                     prompt_title: None,
                     quota_usage: None,
                 },
@@ -1979,6 +2015,7 @@ mod tests {
                     modified_at_ms: modified_at_ms(&valid_metadata),
                     size_bytes: valid_metadata.len() as i64,
                     rows: vec![],
+                    hourly_rows: vec![],
                     prompt_title: None,
                     quota_usage: None,
                 },

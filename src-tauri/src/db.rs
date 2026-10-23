@@ -1,13 +1,13 @@
 use crate::pricing::{calculate_cost_usd, PricingSource};
 use crate::types::{
-    DailyUsageRow, ModelUsage, ProjectUsage, SessionDailyUsageRow, SessionDetailRow,
-    SessionQuotaUsage,
+    DailyUsageRow, HourlyUsageRow, ModelUsage, ProjectUsage, SessionDailyUsageRow,
+    SessionDetailRow, SessionQuotaUsage,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
-const QUOTA_PARSER_VERSION: i64 = 4;
+const QUOTA_PARSER_VERSION: i64 = 5;
 
 pub fn open_database(database_path: &Path) -> Result<Connection, String> {
     let db = Connection::open(database_path).map_err(|error| error.to_string())?;
@@ -42,6 +42,7 @@ pub fn open_database(database_path: &Path) -> Result<Connection, String> {
           modified_at_ms INTEGER NOT NULL,
           size_bytes INTEGER NOT NULL,
           rows_json TEXT NOT NULL,
+          hourly_rows_json TEXT NOT NULL DEFAULT '[]',
           prompt_title TEXT,
           turn_count INTEGER NOT NULL DEFAULT 0,
           quota_usage_json TEXT,
@@ -56,6 +57,12 @@ pub fn open_database(database_path: &Path) -> Result<Connection, String> {
         "daily_usage_rollups",
         "projects_json",
         "ALTER TABLE daily_usage_rollups ADD COLUMN projects_json TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    ensure_column(
+        &db,
+        "session_file_rollups",
+        "hourly_rows_json",
+        "ALTER TABLE session_file_rollups ADD COLUMN hourly_rows_json TEXT NOT NULL DEFAULT '[]'",
     )?;
     ensure_column(
         &db,
@@ -91,6 +98,7 @@ pub struct SessionFileRollup {
     pub modified_at_ms: i64,
     pub size_bytes: i64,
     pub rows: Vec<DailyUsageRow>,
+    pub hourly_rows: Vec<HourlyUsageRow>,
     pub prompt_title: Option<String>,
     pub turn_count: usize,
     pub quota_usage: Option<SessionQuotaRollup>,
@@ -351,7 +359,7 @@ pub fn query_session_file_rollup(
 ) -> Result<Option<SessionFileRollup>, String> {
     let result = db.query_row(
         r#"
-        SELECT rows_json, prompt_title, quota_usage_json, turn_count
+        SELECT rows_json, hourly_rows_json, prompt_title, quota_usage_json, turn_count
         FROM session_file_rollups
         WHERE path = ? AND modified_at_ms = ? AND size_bytes = ? AND quota_parser_version = ?
         "#,
@@ -359,16 +367,19 @@ pub fn query_session_file_rollup(
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
-                row.get::<_, usize>(3)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, usize>(4)?,
             ))
         },
     );
 
     match result {
-        Ok((rows_json, prompt_title, quota_usage_json, turn_count)) => {
+        Ok((rows_json, hourly_rows_json, prompt_title, quota_usage_json, turn_count)) => {
             let rows = serde_json::from_str(&rows_json).map_err(|error| error.to_string())?;
+            let hourly_rows =
+                serde_json::from_str(&hourly_rows_json).map_err(|error| error.to_string())?;
             let quota_usage = quota_usage_json
                 .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
                 .transpose()?;
@@ -377,6 +388,7 @@ pub fn query_session_file_rollup(
                 modified_at_ms,
                 size_bytes,
                 rows,
+                hourly_rows,
                 prompt_title,
                 turn_count,
                 quota_usage,
@@ -388,7 +400,7 @@ pub fn query_session_file_rollup(
 }
 
 pub fn query_all_session_file_rollups(db: &Connection) -> Result<Vec<SessionFileRollup>, String> {
-    let mut statement = db.prepare("SELECT path, modified_at_ms, size_bytes, rows_json, prompt_title, quota_usage_json, turn_count FROM session_file_rollups")
+    let mut statement = db.prepare("SELECT path, modified_at_ms, size_bytes, rows_json, hourly_rows_json, prompt_title, quota_usage_json, turn_count FROM session_file_rollups")
         .map_err(|error| error.to_string())?;
     let records = statement
         .query_map([], |row| {
@@ -397,16 +409,25 @@ pub fn query_all_session_file_rollups(db: &Connection) -> Result<Vec<SessionFile
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(4)?,
                 row.get::<_, Option<String>>(5)?,
-                row.get::<_, usize>(6)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, usize>(7)?,
             ))
         })
         .map_err(|error| error.to_string())?;
     records
         .map(|record| {
-            let (path, modified_at_ms, size_bytes, rows_json, prompt_title, quota_json, turn_count) =
-                record.map_err(|error| error.to_string())?;
+            let (
+                path,
+                modified_at_ms,
+                size_bytes,
+                rows_json,
+                hourly_rows_json,
+                prompt_title,
+                quota_json,
+                turn_count,
+            ) = record.map_err(|error| error.to_string())?;
             Ok(SessionFileRollup {
                 path,
                 modified_at_ms,
@@ -414,6 +435,8 @@ pub fn query_all_session_file_rollups(db: &Connection) -> Result<Vec<SessionFile
                 prompt_title,
                 turn_count,
                 rows: serde_json::from_str(&rows_json).map_err(|error| error.to_string())?,
+                hourly_rows: serde_json::from_str(&hourly_rows_json)
+                    .map_err(|error| error.to_string())?,
                 quota_usage: quota_json
                     .map(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
                     .transpose()?,
@@ -511,16 +534,18 @@ pub fn upsert_session_file_rollups(
                   modified_at_ms,
                   size_bytes,
                   rows_json,
+                  hourly_rows_json,
                   prompt_title,
                   quota_usage_json,
                   turn_count,
                   quota_parser_version,
                   updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(path) DO UPDATE SET
                   modified_at_ms = excluded.modified_at_ms,
                   size_bytes = excluded.size_bytes,
                   rows_json = excluded.rows_json,
+                  hourly_rows_json = excluded.hourly_rows_json,
                   prompt_title = excluded.prompt_title,
                   quota_usage_json = excluded.quota_usage_json,
                   turn_count = excluded.turn_count,
@@ -533,6 +558,8 @@ pub fn upsert_session_file_rollups(
         for rollup in rollups {
             let rows_json =
                 serde_json::to_string(&rollup.rows).map_err(|error| error.to_string())?;
+            let hourly_rows_json =
+                serde_json::to_string(&rollup.hourly_rows).map_err(|error| error.to_string())?;
             let quota_usage_json = rollup
                 .quota_usage
                 .as_ref()
@@ -545,6 +572,7 @@ pub fn upsert_session_file_rollups(
                     rollup.modified_at_ms,
                     rollup.size_bytes,
                     rows_json,
+                    hourly_rows_json,
                     rollup.prompt_title,
                     quota_usage_json,
                     rollup.turn_count,
@@ -1132,6 +1160,7 @@ mod tests {
                     modified_at_ms: 2,
                     size_bytes: 2,
                     rows: vec![],
+                    hourly_rows: vec![],
                     prompt_title: Some("First real request".to_string()),
                     quota_usage: None,
                 },
@@ -1141,6 +1170,7 @@ mod tests {
                     modified_at_ms: 1,
                     size_bytes: 1,
                     rows: vec![],
+                    hourly_rows: vec![],
                     prompt_title: Some(String::new()),
                     quota_usage: None,
                 },
@@ -1199,6 +1229,7 @@ mod tests {
                 modified_at_ms: 2,
                 size_bytes: 200,
                 rows: vec![daily_row("2026-07-01", 1), daily_row("2026-07-02", 2)],
+                hourly_rows: vec![],
                 prompt_title: None,
                 quota_usage: None,
             }],
