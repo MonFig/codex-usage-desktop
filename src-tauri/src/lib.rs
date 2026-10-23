@@ -336,8 +336,7 @@ fn show_quota_window(app: tauri::AppHandle) -> Result<(), String> {
         .ok_or_else(|| "Quota window is unavailable".to_string())?;
     window.set_always_on_top(true).map_err(|e| e.to_string())?;
     quota_window::configure(&window)?;
-    window.show().map_err(|e| e.to_string())?;
-    window.set_focus().map_err(|e| e.to_string())?;
+    quota_window::show(&window)?;
     window
         .emit("quota-window-shown", ())
         .map_err(|e| e.to_string())
@@ -1034,6 +1033,8 @@ pub fn run() {
         )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_nspanel::init());
     #[cfg(feature = "e2e")]
     let builder = builder
         .plugin(tauri_plugin_wdio_webdriver::init())

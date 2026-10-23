@@ -1,5 +1,80 @@
 import { $, $$, browser, expect } from "@wdio/globals";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { resolve } from "node:path";
 import type { CodexLimitsResponse } from "../src/lib/api";
+
+type NativeState = { onActiveSpace: boolean; visibleOnScreen: boolean; frontmostPid: number; appPid: number };
+
+async function waitForOverlayOnApp(pid: number, message: string, activate?: () => void) {
+  let stable = 0;
+  let lastActivation = 0;
+  let lastState: NativeState | undefined;
+  await browser.waitUntil(async () => {
+    lastState = await browser.tauri.execute(({ core }) => core.invoke("quota_native_state")) as NativeState;
+    if (lastState.frontmostPid !== pid && activate && Date.now() - lastActivation > 1_000) {
+      activate();
+      lastActivation = Date.now();
+    }
+    stable = lastState.frontmostPid === pid && lastState.onActiveSpace && lastState.visibleOnScreen ? stable + 1 : 0;
+    return stable >= 5;
+  }, { timeout: 15_000, interval: 250, timeoutMsg: message }).catch((error) => {
+    console.log("[quota native state]", lastState);
+    throw error;
+  });
+}
+
+async function startFullscreenApp(apps: ChildProcessWithoutNullStreams[]) {
+  const app = spawn("swift", [resolve("e2e/fixtures/fullscreen-app.swift")], { stdio: ["pipe", "pipe", "pipe"] });
+  apps.push(app);
+  await new Promise<void>((ready, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Fullscreen fixture did not start")), 30_000);
+    let output = "";
+    app.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output.includes("FULLSCREEN_READY")) {
+        clearTimeout(timeout);
+        ready();
+      }
+    });
+    app.on("error", (error) => { clearTimeout(timeout); reject(error); });
+    app.on("exit", (code) => { clearTimeout(timeout); reject(new Error(`Fullscreen fixture exited: ${code}`)); });
+    app.stderr.on("data", (chunk) => console.log(`[fullscreen fixture] ${chunk}`));
+  });
+  return app;
+}
+
+async function verifyFullscreenSpaces() {
+  await browser.tauri.execute(async ({ core }) => {
+    await core.invoke("plugin:window|show", { label: "main" });
+    await core.invoke("plugin:window|set_focus", { label: "main" });
+  });
+  const { appPid } = await browser.tauri.execute(({ core }) => core.invoke("quota_native_state")) as NativeState;
+  const apps: ChildProcessWithoutNullStreams[] = [];
+  try {
+    const first = await startFullscreenApp(apps);
+    first.stdin.write("activate\n");
+    await waitForOverlayOnApp(first.pid!, "Quota disappeared on the first fullscreen Space", () => first.stdin.write("activate\n"));
+    const second = await startFullscreenApp(apps);
+    second.stdin.write("activate\n");
+    await waitForOverlayOnApp(second.pid!, "Quota disappeared on the second fullscreen Space", () => second.stdin.write("activate\n"));
+    for (let round = 0; round < 2; round++) {
+      first.stdin.write("activate\n");
+      await waitForOverlayOnApp(first.pid!, "Quota disappeared switching back to the first fullscreen Space", () => first.stdin.write("activate\n"));
+      second.stdin.write("activate\n");
+      await waitForOverlayOnApp(second.pid!, "Quota disappeared switching to the second fullscreen Space", () => second.stdin.write("activate\n"));
+      await browser.tauri.execute(({ core }) => core.invoke("plugin:window|set_focus", { label: "main" }));
+      await waitForOverlayOnApp(appPid, "Quota disappeared when returning to the dashboard Space");
+    }
+  } finally {
+    await Promise.all(apps.map((app) => new Promise<void>((done) => {
+      if (app.exitCode !== null) { done(); return; }
+      const timeout = setTimeout(() => { app.kill(); done(); }, 3_000);
+      app.once("exit", () => { clearTimeout(timeout); done(); });
+      app.stdin.write("quit\n");
+    })));
+    await browser.tauri.execute(({ core }) => core.invoke("plugin:window|set_focus", { label: "main" }));
+  }
+}
 
 describe("quota floating window", () => {
   const run = process.env.CODEX_USAGE_QUOTA_E2E === "1" ? it : it.skip;
@@ -24,6 +99,12 @@ describe("quota floating window", () => {
         decorated: await core.invoke("plugin:window|is_decorated", { label: "quota" }),
       };
     })).toEqual({ visible: true, top: true, decorated: false });
+    if (process.platform === "darwin") {
+      const native = await browser.tauri.execute(({ core }) => core.invoke("quota_native_state")) as { isPanel: boolean; nonActivating: boolean; canJoinAllSpaces: boolean };
+      expect(native.isPanel).toBe(true);
+      expect(native.nonActivating).toBe(true);
+      expect(native.canJoinAllSpaces).toBe(true);
+    }
     expect(await $("header[data-tauri-drag-region]").isExisting()).toBe(true);
 
     // Exercise the native move path and retain the exact position across hide/show.
@@ -57,24 +138,7 @@ describe("quota floating window", () => {
     expect(ballSize.size.height / ballSize.scale).toBe(88);
     if (process.env.CODEX_USAGE_QUOTA_SCREENSHOT) await browser.saveScreenshot(process.env.CODEX_USAGE_QUOTA_SCREENSHOT.replace(".png", "-ball.png"));
 
-    if (process.platform === "darwin") {
-      await browser.tauri.switchWindow("main");
-      await browser.tauri.execute(async ({ core }) => {
-        await core.invoke("plugin:window|show", { label: "main" });
-        await core.invoke("plugin:window|set_focus", { label: "main" });
-        await core.invoke("plugin:window|set_fullscreen", { label: "main", value: true });
-      });
-      await browser.tauri.switchWindow("quota");
-      let stable = 0;
-      await browser.waitUntil(async () => {
-        const state = await browser.tauri.execute(async ({ core }) => ({
-          mainFullScreen: await core.invoke("plugin:window|is_fullscreen", { label: "main" }),
-          quota: await core.invoke("quota_native_state") as { fullScreenAuxiliary: boolean; canJoinAllApplications: boolean; onActiveSpace: boolean; visibleOnScreen: boolean },
-        }));
-        stable = state.mainFullScreen && state.quota.onActiveSpace && state.quota.visibleOnScreen && state.quota.fullScreenAuxiliary && state.quota.canJoinAllApplications ? stable + 1 : 0;
-        return stable >= 5;
-      }, { timeout: 15_000, interval: 250, timeoutMsg: "Quota ball did not remain on the active full-screen Space" });
-    }
+    if (process.platform === "darwin") await verifyFullscreenSpaces();
 
     await $('button[aria-label="Expand quota overlay"]').click();
     await $('[data-quota-mode="expanded"]').waitForDisplayed();
@@ -90,10 +154,7 @@ describe("quota floating window", () => {
       const native = await browser.tauri.execute(({ core }) => core.invoke("quota_native_state")) as { onActiveSpace: boolean; visibleOnScreen: boolean };
       expect(native.onActiveSpace).toBe(true);
       expect(native.visibleOnScreen).toBe(true);
-      await browser.tauri.switchWindow("main");
-      await browser.tauri.execute(({ core }) => core.invoke("plugin:window|set_fullscreen", { label: "main", value: false }));
-      await browser.waitUntil(async () => !(await browser.tauri.execute(({ core }) => core.invoke("plugin:window|is_fullscreen", { label: "main" }))));
-      await browser.tauri.switchWindow("quota");
+      await verifyFullscreenSpaces();
     }
     await $('button[aria-label="Close"]').click();
     expect(await browser.tauri.execute(({ core }) => core.invoke("plugin:window|is_visible", { label: "quota" }))).toBe(false);
