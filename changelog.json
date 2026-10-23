@@ -1,4 +1,8 @@
 {
+  "4.2.0": {
+    "zh": "- chore(homebrew): update cask to 4.1.0\n- fix: keep collapsed sidebar clear of macOS window controls\n- docs: refresh dashboard screenshot with illustrative data\n- feat(i18n): add Korean localization (#15)\n- docs: add Korean README",
+    "en": "- chore(homebrew): update cask to 4.1.0\n- fix: keep collapsed sidebar clear of macOS window controls\n- docs: refresh dashboard screenshot with illustrative data\n- feat(i18n): add Korean localization (#15)\n- docs: add Korean README"
+  },
   "4.1.0": {
     "zh": "- chore(homebrew): update cask to 4.0.1\n- feat: add background search to session details\n- fix: find session matches in place without hiding context\n- fix: open session search from the header icon\n- fix: highlight all session matches in a floating search bar\n- fix: keep session search responsive during rapid typing",
     "en": "- chore(homebrew): update cask to 4.0.1\n- feat: add background search to session details\n- fix: find session matches in place without hiding context\n- fix: open session search from the header icon\n- fix: highlight all session matches in a floating search bar\n- fix: keep session search responsive during rapid typing"
