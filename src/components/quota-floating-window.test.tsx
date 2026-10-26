@@ -40,6 +40,51 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe("quota overlay", () => {
+  it("counts down the outer time ring independently of quota, reaches zero, and restarts on a new window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(limits.updatedAt));
+    const view = render(<QuotaFloatingWindow />);
+    await act(async () => {});
+    const time = () => screen.getByRole("meter", { name: "5-hour time remaining" });
+    expect(time()).toHaveAttribute("aria-valuenow", "100");
+    expect(time().querySelectorAll("circle")[1]).toHaveAttribute("stroke-dasharray", "100 100");
+    expect(screen.getAllByRole("meter", { name: "5-hour time remaining" })).toHaveLength(1);
+
+    vi.setSystemTime(new Date("2026-10-23T09:59:30Z"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(time()).toHaveAttribute("aria-valuenow", "50");
+    expect(time().querySelectorAll("circle")[1]).toHaveAttribute("stroke-dasharray", "50 100");
+    expect(screen.getByRole("meter", { name: "5-Hour Limit" })).toHaveAttribute("aria-valuenow", "72");
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse to quota ball" }));
+    await act(async () => {});
+    vi.setSystemTime(new Date("2026-10-23T12:29:30Z"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(time()).toHaveAttribute("aria-valuenow", "0");
+    expect(time().querySelectorAll("circle")[1]).toHaveAttribute("opacity", "0");
+    expect(screen.getByText("72%")).toBeInTheDocument();
+    await act(async () => mocks.listeners.get("codex-limits-updated")?.({ payload: { ...limits, session: { ...limits.session, resetsAt: "2026-10-23T17:30:00Z" } } }));
+    expect(time()).toHaveAttribute("aria-valuenow", "100");
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    ["2026-10-23T14:30:00Z", "100"],
+    ["2026-10-23T07:00:00Z", "0"],
+    [null, null],
+    ["invalid", null],
+  ])("handles a reset time of %s without inventing time or exceeding the ring bounds", async (resetsAt, expected) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(limits.updatedAt));
+    mocks.fetch.mockResolvedValue({ ...limits, session: { ...limits.session, resetsAt } });
+    render(<QuotaFloatingWindow />);
+    await act(async () => {});
+    const time = screen.getByRole("meter", { name: "5-hour time remaining" });
+    if (expected === null) expect(time).not.toHaveAttribute("aria-valuenow");
+    else expect(time).toHaveAttribute("aria-valuenow", expected);
+  });
+
   it("renders remaining quota and local reset times, keeps the last snapshot on failure, and recovers", async () => {
     render(<QuotaFloatingWindow />);
     await screen.findByText("72%");
@@ -89,7 +134,7 @@ describe("quota overlay", () => {
     fireEvent.click(screen.getByRole("button", { name: "Collapse to quota ball" }));
     const ball = await screen.findByRole("button", { name: "Expand quota overlay" });
     expect(mocks.resize).toHaveBeenCalledWith("set_quota_collapsed", { collapsed: true });
-    expect(screen.getAllByRole("meter")).toHaveLength(1);
+    expect(screen.getAllByRole("meter")).toHaveLength(2);
     expect(screen.queryByText("35%")).not.toBeInTheDocument();
     expect(screen.queryByText(/Resets /)).not.toBeInTheDocument();
     await act(async () => mocks.listeners.get("codex-limits-updated")?.({ payload: { ...limits, session: { ...limits.session, remainingPercent: 62 } } }));
@@ -97,7 +142,7 @@ describe("quota overlay", () => {
     fireEvent.click(ball);
     await screen.findByRole("button", { name: "Collapse to quota ball" });
     expect(mocks.resize).toHaveBeenLastCalledWith("set_quota_collapsed", { collapsed: false });
-    expect(screen.getAllByRole("meter")).toHaveLength(2);
+    expect(screen.getAllByRole("meter")).toHaveLength(3);
   });
 
   it("drags the ball without expanding, but still permits keyboard expansion", async () => {
