@@ -6,17 +6,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { fetchCodexLimits, type CodexLimitWindow, type CodexLimitsResponse, type UsageRefreshResponse } from "@/lib/api";
 
-function QuotaRing({ quota, label, large = false }: { quota: CodexLimitWindow | null; label: string; large?: boolean }) {
+function QuotaRing({ quota, label, large = false, timeRemaining }: { quota: CodexLimitWindow | null; label: string; large?: boolean; timeRemaining?: number | null }) {
   const { t } = useTranslation();
   const remaining = quota && Number.isFinite(quota.remainingPercent) ? Math.max(0, Math.min(100, quota.remainingPercent)) : null;
   const tone = remaining !== null && remaining <= 10 ? "text-error" : remaining !== null && remaining <= 65 ? "text-warning" : "text-primary";
   return (
-    <div role="meter" aria-label={label} aria-valuenow={remaining ?? undefined} aria-valuemin={0} aria-valuemax={100} className={`relative shrink-0 ${large ? "h-[76px] w-[76px]" : "h-[60px] w-[60px]"}`}>
+    <div className={`relative shrink-0 ${large ? "h-[76px] w-[76px]" : "h-[60px] w-[60px]"}`}>
+      {timeRemaining !== undefined && (
+        <svg role="meter" aria-label={t("floating.time_remaining")} aria-valuenow={timeRemaining ?? undefined} aria-valuemin={0} aria-valuemax={100} viewBox="0 0 80 80" className="pointer-events-none absolute inset-0 h-full w-full -rotate-90 text-cyan-500">
+          <title>{t("floating.time_remaining")}: {timeRemaining === null ? "--" : `${Math.round(timeRemaining)}%`}</title>
+          <circle cx="40" cy="40" r="38" fill="none" stroke="currentColor" strokeWidth="2" className="text-muted" />
+          <circle cx="40" cy="40" r="38" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" pathLength="100" strokeDasharray={`${timeRemaining ?? 0} 100`} opacity={timeRemaining !== null && timeRemaining > 0 ? 1 : 0} />
+        </svg>
+      )}
       <svg aria-hidden="true" viewBox="0 0 80 80" className={`h-full w-full -rotate-90 ${tone}`}>
         <circle cx="40" cy="40" r="33" fill="none" stroke="currentColor" strokeWidth="5" className="text-muted" />
         <circle cx="40" cy="40" r="33" fill="none" stroke="currentColor" strokeWidth="5" strokeLinecap="round" pathLength="100" strokeDasharray={`${remaining ?? 0} 100`} />
       </svg>
-      <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+      <div role="meter" aria-label={label} aria-valuenow={remaining ?? undefined} aria-valuemin={0} aria-valuemax={100} className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
         <span className={`font-semibold leading-none tracking-tight tabular-nums ${large ? "text-[21px]" : "text-[16px]"}`}>{remaining === null ? "--" : `${Math.round(remaining)}%`}</span>
         <span className={`mt-1 leading-none text-muted-foreground ${large ? "text-[9px]" : "text-[8px]"}`}>{t("limits.remaining")}</span>
       </div>
@@ -31,6 +38,7 @@ export function QuotaFloatingWindow() {
   const [refreshing, setRefreshing] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
   const [resizing, setResizing] = useState(false);
+  const [now, setNow] = useState(Date.now);
   const inFlight = useRef(false);
   const modeInFlight = useRef(false);
   const pointerStart = useRef<{ x: number; y: number } | null>(null);
@@ -54,6 +62,7 @@ export function QuotaFloatingWindow() {
   const refresh = useCallback(async () => {
     if (inFlight.current) return;
     inFlight.current = true;
+    setNow(Date.now());
     setRefreshing(true);
     try {
       setLimits(await fetchCodexLimits());
@@ -67,14 +76,21 @@ export function QuotaFloatingWindow() {
   }, []);
 
   useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
     const subscriptions = [
       listen<CodexLimitsResponse>("codex-limits-updated", ({ payload }) => {
         setLimits(payload);
+        setNow(Date.now());
         setError(null);
       }),
       listen<UsageRefreshResponse>("background-refresh-completed", ({ payload }) => {
         if (payload.limits) {
           setLimits(payload.limits);
+          setNow(Date.now());
           setError(null);
         } else if (payload.limitsError) {
           setError(payload.limitsError);
@@ -116,6 +132,8 @@ export function QuotaFloatingWindow() {
     { key: "session", label: t("limits.window_5hour"), window: limits?.session ?? null },
     { key: "weekly", label: limits?.weekly?.windowMinutes === 43_200 ? t("limits.window_monthly") : t("limits.window_weekly"), window: limits?.weekly ?? null },
   ];
+  const resetTime = limits?.session?.resetsAt ? Date.parse(limits.session.resetsAt) : NaN;
+  const timeRemaining = Number.isFinite(resetTime) ? Math.max(0, Math.min(100, (resetTime - now) / (5 * 60 * 60 * 1_000) * 100)) : null;
 
   const errorIndicator = error ? (
     <span role="alert" className="text-warning" title={error}>
@@ -148,7 +166,7 @@ export function QuotaFloatingWindow() {
           onPointerCancel={() => { pointerStart.current = null; }}
           onClick={(event) => { if (event.detail === 0 || !dragged.current) void changeMode(false); }}
         >
-          <QuotaRing quota={limits?.session ?? null} label={t("limits.window_5hour")} large />
+          <QuotaRing quota={limits?.session ?? null} label={t("limits.window_5hour")} timeRemaining={timeRemaining} large />
           <span className="absolute right-0 top-0">{errorIndicator}</span>
         </button>
       </main>
@@ -177,7 +195,7 @@ export function QuotaFloatingWindow() {
           return (
             <section key={key} data-quota-window={key} aria-label={label} className="flex flex-col items-center justify-center gap-1.5 rounded-xl border border-border/70 bg-surface px-2 py-2">
               <h2 className="text-[11px] font-semibold leading-tight">{label}</h2>
-              <QuotaRing quota={quota} label={label} />
+              <QuotaRing quota={quota} label={label} timeRemaining={key === "session" ? timeRemaining : undefined} />
               <p className="max-w-full truncate text-[10px] font-medium tabular-nums text-muted-foreground" title={quota?.resetsAt ? new Date(quota.resetsAt).toLocaleString(i18n.language) : t("limits.no_window_returned")}>
                 {quota ? t("floating.resets", { time: formatTime(quota.resetsAt, key !== "session") }) : "--"}
               </p>

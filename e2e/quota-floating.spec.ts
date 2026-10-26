@@ -128,8 +128,9 @@ describe("quota floating window", () => {
 
     await $('button[aria-label="Collapse to quota ball"]').click();
     await $('[data-quota-mode="collapsed"]').waitForDisplayed();
-    await expect($$('[role="meter"]')).toBeElementsArrayOfSize(1);
-    await expect($('[role="meter"]')).toHaveAttribute("aria-valuenow", "61");
+    await expect($$('[role="meter"]')).toBeElementsArrayOfSize(2);
+    await expect($('[role="meter"][aria-label="5-Hour Limit"]')).toHaveAttribute("aria-valuenow", "61");
+    await expect($('[role="meter"][aria-label="5-hour time remaining"]')).toExist();
     const ballSize = await browser.tauri.execute(async ({ core }) => ({
       size: await core.invoke("plugin:window|inner_size", { label: "quota" }) as { width: number; height: number },
       scale: await core.invoke("plugin:window|scale_factor", { label: "quota" }) as number,
@@ -142,7 +143,7 @@ describe("quota floating window", () => {
 
     await $('button[aria-label="Expand quota overlay"]').click();
     await $('[data-quota-mode="expanded"]').waitForDisplayed();
-    await expect($$('[role="meter"]')).toBeElementsArrayOfSize(2);
+    await expect($$('[role="meter"]')).toBeElementsArrayOfSize(3);
     expect(await browser.tauri.execute(({ core }) => core.invoke("plugin:window|is_always_on_top", { label: "quota" }))).toBe(true);
     const expandedSize = await browser.tauri.execute(async ({ core }) => ({
       size: await core.invoke("plugin:window|inner_size", { label: "quota" }) as { width: number; height: number },

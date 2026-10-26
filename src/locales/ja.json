@@ -1,5 +1,6 @@
 {
   "floating": {
+    "time_remaining": "5時間枠の残り時間",
     "open": "利用枠フロート",
     "title": "Codex 利用枠",
     "drag": "ドラッグして移動",

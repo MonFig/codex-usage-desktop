@@ -1,5 +1,6 @@
 {
   "floating": {
+    "time_remaining": "5-hour time remaining",
     "open": "Quota overlay",
     "title": "Codex quota",
     "drag": "Drag to move",
